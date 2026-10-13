@@ -11,6 +11,7 @@ higher layers can re-announce the threads they follow.
 from __future__ import annotations
 
 import asyncio
+import sys
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
@@ -306,7 +307,7 @@ class CodexIpcClient:
 
     async def _connect_once(self) -> None:
         path = await self._resolve_endpoint()
-        reader, writer = await asyncio.open_unix_connection(str(path))
+        reader, writer = await open_ipc_connection(path)
         self._writer = writer
         decoder = FrameDecoder()
         try:
@@ -336,7 +337,10 @@ class CodexIpcClient:
             ensure_ipc_directory(self.codex_home)
         if await _can_connect(path):
             return path
-        if not self.allow_router:
+        if not self.allow_router or sys.platform == "win32":
+            # On Windows several processes can create instances of the same
+            # named pipe, so a second router would split the clients; the App
+            # becomes the router itself when it starts.
             raise IpcNotConnectedError(f"no ipc router at {path}")
         if self._router is None or not self._router.listening:
             router = IpcRouter()
@@ -577,9 +581,29 @@ def _parse_request(message: Mapping[str, Any]) -> IpcRequest:
     )
 
 
+async def open_ipc_connection(
+    path: Path,
+) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+    """Connect to the router: a named pipe on Windows, a Unix socket elsewhere."""
+
+    if sys.platform != "win32":
+        return await asyncio.open_unix_connection(str(path))
+    # pathlib rewrites "\\.\pipe\codex-ipc" to "\pipe\codex-ipc", so the pipe
+    # name is used as a plain string.
+    from connector.runtimes.codex.ipc.paths import WINDOWS_PIPE_PATH
+
+    loop = asyncio.get_running_loop()
+    reader = asyncio.StreamReader()
+    protocol = asyncio.StreamReaderProtocol(reader)
+    transport, _ = await loop.create_pipe_connection(  # type: ignore[attr-defined]
+        lambda: protocol, WINDOWS_PIPE_PATH
+    )
+    return reader, asyncio.StreamWriter(transport, protocol, reader, loop)
+
+
 async def _can_connect(path: Path) -> bool:
     try:
-        _, writer = await asyncio.open_unix_connection(str(path))
+        _, writer = await open_ipc_connection(path)
     except (OSError, ValueError):
         return False
     writer.close()

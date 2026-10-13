@@ -17,7 +17,7 @@ class IpcPathError(OSError):
 
 
 def is_supported_platform() -> bool:
-    return sys.platform != "win32"
+    return True
 
 
 def ipc_socket_path(codex_home: str | os.PathLike[str]) -> Path:
@@ -34,6 +34,10 @@ def ensure_ipc_directory(codex_home: str | os.PathLike[str]) -> Path:
     """
 
     directory = Path(codex_home) / IPC_DIRECTORY_NAME
+    if sys.platform == "win32":
+        # Windows uses the named pipe \.\pipe\codex-ipc; there is no socket
+        # directory and no uid to check.
+        return directory
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     info = directory.lstat()
     uid = _current_uid()

@@ -49,6 +49,7 @@ from connector.runtimes.codex.sdk.runtime_client import (
 from connector.runtimes.codex.sessions.reader import thread_with_raw_turns
 
 DEFAULT_PUBLISH_DELAY = 0.3
+QUEUE_DRAIN_STATUSES = frozenset({"idle", "error"})
 STATE_VERSION_NOTE = "agents-anywhere-owner"
 
 FOLLOWER_METHODS = (
@@ -93,6 +94,12 @@ class CodexIpcOwnerService:
     apply_selections: ApplySelections | None = None
     followers: dict[str, set[str]] = field(default_factory=dict, init=False)
     revisions: dict[str, int] = field(default_factory=dict, init=False)
+    # Follow-ups a window queued on a thread AA owns. A follower window never
+    # starts a turn itself: it hands its queue to the owner
+    # (thread-follower-set-queued-follow-ups-state), and the owner sends each
+    # message once the thread is idle and broadcasts the remaining queue.
+    queues: dict[str, list[dict[str, Any]]] = field(default_factory=dict, init=False)
+    _draining: set[str] = field(default_factory=set, init=False)
     _publish_handles: dict[str, asyncio.TimerHandle] = field(default_factory=dict, init=False)
     _publish_tasks: set[asyncio.Task[None]] = field(default_factory=set, init=False)
     _unsubscribe: list[Callable[[], None]] = field(default_factory=list, init=False)
@@ -166,6 +173,10 @@ class CodexIpcOwnerService:
     def notify_state(self, state: SessionState) -> None:
         if state.external_session_id:
             self.notify_thread(state.external_session_id)
+            if state.status in QUEUE_DRAIN_STATUSES and self.queues.get(state.external_session_id):
+                task = asyncio.create_task(self._drain_queue(state.external_session_id))
+                self._publish_tasks.add(task)
+                task.add_done_callback(self._publish_tasks.discard)
 
     def notify_thread(self, thread_id: str) -> None:
         """Schedule a snapshot re-publish for followers of ``thread_id``."""
@@ -374,17 +385,115 @@ class CodexIpcOwnerService:
         elif method == "thread-follower-compact-thread":
             await self.sdk.compact_thread(thread_id)
             result = {"ok": True}
-        elif method in {
-            "thread-follower-update-daybreak",
-            "thread-follower-set-queued-follow-ups-state",
-            "thread-follower-remove-queued-message",
-            "thread-follower-clear-queued-messages",
-        }:
+        elif method == "thread-follower-set-queued-follow-ups-state":
+            state = params.get("state")
+            messages = state.get(thread_id) if isinstance(state, Mapping) else None
+            discarded = params.get("discardedMessageIds")
+            await self._accept_queue(
+                thread_id,
+                messages if isinstance(messages, list) else [],
+                set(discarded) if isinstance(discarded, list) else set(),
+            )
+            result = {"ok": True}
+        elif method == "thread-follower-remove-queued-message":
+            message_id = params.get("messageId")
+            queue = self.queues.get(thread_id, [])
+            kept = [message for message in queue if message.get("id") != message_id]
+            await self._set_queue(thread_id, kept)
+            result = {"removed": len(kept) != len(queue)}
+        elif method == "thread-follower-clear-queued-messages":
+            cleared = list(self.queues.get(thread_id, []))
+            await self._set_queue(thread_id, [])
+            result = {"messages": cleared}
+        elif method == "thread-follower-update-daybreak":
             result = {"ok": True}
         else:
             raise RuntimeError(f"unsupported follower request {method}")
         self.notify_thread(thread_id)
         return {"method": method, **result}
+
+    # -- queued follow-ups ----------------------------------------------------
+
+    async def _accept_queue(
+        self, thread_id: str, messages: list[Any], discarded: set[str]
+    ) -> None:
+        """Take over a follower window's queue for ``thread_id``, as the App owner does."""
+
+        kept = [
+            dict(message)
+            for message in messages
+            if isinstance(message, Mapping)
+            and isinstance(message.get("id"), str)
+            and message["id"] not in discarded
+        ]
+        await self._set_queue(thread_id, kept)
+        logger.info(
+            "codex ipc owner queue accepted thread={} messages={} discarded={}",
+            thread_id,
+            len(kept),
+            len(discarded),
+        )
+        await self._drain_queue(thread_id)
+
+    async def _set_queue(self, thread_id: str, messages: list[dict[str, Any]]) -> None:
+        if messages:
+            self.queues[thread_id] = messages
+        else:
+            self.queues.pop(thread_id, None)
+        try:
+            await self.client.broadcast(
+                "thread-queued-followups-changed",
+                {"conversationId": thread_id, "hostId": self.host_id, "messages": messages},
+            )
+        except Exception as exc:  # noqa: BLE001 - followers resync on their next request
+            logger.warning("codex ipc owner queue broadcast failed thread={} error={}", thread_id, exc)
+
+    def _thread_idle(self, thread_id: str) -> bool:
+        session_id = self.session_id_for(thread_id)
+        if session_id in self.active_turn_ids:
+            return False
+        state = self.session_states.get(session_id)
+        return state is None or state.status in QUEUE_DRAIN_STATUSES
+
+    async def _drain_queue(self, thread_id: str) -> None:
+        """Send the first queued follow-up once the thread is idle."""
+
+        if thread_id in self._draining:
+            return
+        queue = self.queues.get(thread_id)
+        if not queue or not self._thread_idle(thread_id) or queue[0].get("pausedReason"):
+            return
+        self._draining.add(thread_id)
+        message = queue[0]
+        try:
+            text = message.get("text")
+            result = await self.sdk.start_turn(
+                CodexStartTurnRequest(
+                    thread_id=thread_id,
+                    content=text if isinstance(text, str) else "",
+                    client_message_id=message["id"],
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - keep the message queued for a retry
+            logger.warning(
+                "codex ipc owner queued follow-up failed thread={} message={} error={}",
+                thread_id,
+                message["id"],
+                exc,
+            )
+            return
+        finally:
+            self._draining.discard(thread_id)
+        remaining = [item for item in self.queues.get(thread_id, []) if item.get("id") != message["id"]]
+        await self._set_queue(thread_id, remaining)
+        self.notify_thread(thread_id)
+        logger.info(
+            "codex ipc owner queued follow-up started thread={} message={} turn={} remaining={}",
+            thread_id,
+            message["id"],
+            result.turn_id,
+            len(remaining),
+        )
 
     async def _start_turn(self, thread_id: str, params: Mapping[str, Any]) -> dict[str, Any]:
         turn_start = params.get("turnStart")
