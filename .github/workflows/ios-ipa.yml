@@ -33,21 +33,38 @@ jobs:
             -configuration Release \
             -destination "generic/platform=iOS" \
             -derivedDataPath build \
-            -archivePath build/AgentsAnywhere.archive \
+            -archivePath build/AgentsAnywhere.xcarchive \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             IPHONEOS_DEPLOYMENT_TARGET="${{ inputs.deployment_target || '26.1' }}"
 
       - name: Extract the IPA
         run: |
-          find build/AgentsAnywhere.archive -name "*.ipa"
-          cp "$(find build/AgentsAnywhere.archive -name '*.ipa' | head -1)" agents-anywhere.ipa
+          echo "--- what xcodebuild produced ---"
+          ls -la build
+          ARCHIVE="$(find . -name '*.xcarchive' -type d | head -1)"
+          echo "archive: ${ARCHIVE}"
+          IPA="$(find "${ARCHIVE}" -name '*.ipa' | head -1)"
+          if [ -z "${IPA}" ]; then
+            IPA="$(find build -name '*.ipa' | head -1)"
+          fi
+          if [ -z "${IPA}" ]; then
+            echo "no .ipa found; falling back to zipping the built .app"
+            APP="$(find build/Build/Intermediates.noindex -path '*InstallationBuildProductsLocation*' -name '*.app' -type d | head -1)"
+            echo "app: ${APP}"
+            ROOT="$(pwd)"
+            ( cd "$(dirname "${APP}")" && zip -r -q "${ROOT}/agents-anywhere.ipa" "$(basename "${APP}")" )
+          else
+            cp "${IPA}" agents-anywhere.ipa
+          fi
           ls -l agents-anywhere.ipa
 
       - name: Report the deployment target baked into the binary
         run: |
           unzip -o -q agents-anywhere.ipa -d ipa-check
-          otool -l "ipa-check/Agents Anywhere.app/Agents Anywhere" | grep -A3 LC_MIN_VERSION | head -20
+          BIN="$(find ipa-check -name '*.app' -type d | head -1)"
+          echo "app: ${BIN}"
+          otool -l "${BIN}/$(basename "${BIN}")" | grep -A4 -E 'LC_MIN_VERSION|cmd 0x80' | head -30
 
       - name: Upload the IPA
         uses: actions/upload-artifact@v4
