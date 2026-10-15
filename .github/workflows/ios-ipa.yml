@@ -1,0 +1,56 @@
+name: iOS IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      deployment_target:
+        description: "iOS deployment target (minimum OS the IPA will run on)"
+        default: "26.1"
+        required: false
+
+jobs:
+  build:
+    name: Build unsigned IPA for iOS
+    runs-on: macos-26
+    timeout-minutes: 40
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          xcrun --sdk iphoneos --show-sdk-path
+
+      - name: Archive for iOS (device)
+        run: |
+          xcodebuild archive \
+            -project "ios/Agents Anywhere/Agents Anywhere.xcodeproj" \
+            -scheme "Agents Anywhere" \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath build \
+            -archivePath build/AgentsAnywhere.archive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            IPHONEOS_DEPLOYMENT_TARGET="${{ inputs.deployment_target || '26.1' }}"
+
+      - name: Extract the IPA
+        run: |
+          find build/AgentsAnywhere.archive -name "*.ipa"
+          cp "$(find build/AgentsAnywhere.archive -name '*.ipa' | head -1)" agents-anywhere.ipa
+          ls -l agents-anywhere.ipa
+
+      - name: Report the deployment target baked into the binary
+        run: |
+          unzip -o -q agents-anywhere.ipa -d ipa-check
+          otool -l "ipa-check/Agents Anywhere.app/Agents Anywhere" | grep -A3 LC_MIN_VERSION | head -20
+
+      - name: Upload the IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: agents-anywhere-ios-${{ inputs.deployment_target || '26.1' }}
+          path: agents-anywhere.ipa
