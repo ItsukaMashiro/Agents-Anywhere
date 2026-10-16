@@ -65,7 +65,7 @@ struct AddDeviceAgentSheet: View {
             HStack(spacing: 12) {
                 AppGlassButton(String(localized: "dashboard.pairDevice.quickAdd"), systemImage: "plus", style: .prominent,
                     isLoading: model.busyID == type.id, disabled: !model.connected || model.busyID != nil) {
-                    Task { try? await model.add(type, name: nil, config: [:]) }
+                    Task { try? await model.add(type, name: nil, config: [:], newInstance: type.instancePolicy == "multiple") }
                 }
                 AppGlassButton(String(localized: "dashboard.device.configure"), disabled: !model.connected || model.busyID != nil) { configure(type) }
             }
