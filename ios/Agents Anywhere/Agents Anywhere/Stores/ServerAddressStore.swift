@@ -81,7 +81,11 @@ final class ServerAddressStore {
     }
 
     func move(from source: IndexSet, to destination: Int) {
-        addresses.move(fromOffsets: source, toOffset: destination)
+        // Same semantics as SwiftUI's move(fromOffsets:toOffset:) without importing SwiftUI:
+        // remove the source offsets (descending), then insert at the destination offset.
+        let items = source.sorted().map { addresses[$0] }
+        for index in source.sorted(by: >) { addresses.remove(at: index) }
+        for (offset, item) in items.enumerated() { addresses.insert(item, at: destination + offset) }
         persist()
     }
 
