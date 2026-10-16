@@ -3,7 +3,8 @@ import SwiftUI
 /// Both the header pill and the options sheet explain the same takeover action.
 struct SessionTakeoverConfirmation: ViewModifier {
     @Binding var pending: Bool?
-    /// DSH syncs with Agents Anywhere in real time, so the restart-to-sync caveats do not apply.
+    /// DSH and its forks (Tavern) sync with Agents Anywhere in real time, so the
+    /// restart-to-sync caveats do not apply.
     var isDsh = false
     let onConfirm: (Bool) async -> Void
 

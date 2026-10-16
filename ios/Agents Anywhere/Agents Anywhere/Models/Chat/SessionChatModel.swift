@@ -55,9 +55,11 @@ final class SessionChatModel {
         }
         return String(localized: "Agent")
     }
+    /// DSH and its forks (Tavern) sync with Agents Anywhere in real time through
+    /// the same bridge, so the restart-to-sync caveats do not apply to either.
     var isDsh: Bool {
         guard let meta = session.metadata else { return false }
-        return (meta.runtimeType ?? meta.runtime) == "dsh"
+        return ["dsh", "tavern"].contains(meta.runtimeType ?? meta.runtime)
     }
     var sendingPlaceholder: String? {
         let submitting = session.pendingMessages.contains { $0.delivery == .sending || $0.delivery == .accepted }
