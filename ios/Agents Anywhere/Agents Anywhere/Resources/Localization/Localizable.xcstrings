@@ -9214,6 +9214,23 @@
         }
       }
     },
+    "全屏查看": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "View full screen"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "全屏查看"
+          }
+        }
+      }
+    },
     "全部会话": {
       "extractionState": "manual",
       "localizations": {

@@ -356,7 +356,10 @@ private struct ChatTimelineContent: View, Equatable {
         let anchorEdge = historyAnchor?.edge ?? (anchorGroup?.rows.first?.structure.groupKind == .single ? .top : .bottom)
         // Keep actual row geometry available as Markdown grows and tool groups
         // change height. Hidden tool details own their deferred work separately.
-        VStack(alignment: .leading, spacing: 20) {
+        // Lazy: long transcripts (game sessions especially) must not materialize
+        // every row up front; anchor logic only observes geometry near the
+        // viewport, which a lazy stack still reports.
+        LazyVStack(alignment: .leading, spacing: 20) {
             if model.session.hasOlderItems || keepsOlderPrompt {
                 Group {
                     if isLoadingOlder {

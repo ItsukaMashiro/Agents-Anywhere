@@ -25,7 +25,7 @@ struct SessionTimelineRow: View, Equatable {
                     UserMessageBubble(text: row.text, attachments: files, onAttachment: onAttachment, loadThumbnail: chat.thumbnail)
                 } else {
                     VStack(alignment: .leading, spacing: 14) {
-                        markdown
+                        reply
                         if !files.isEmpty {
                             ChatMessageAttachments(files: files, onOpen: onAttachment, loadThumbnail: chat.thumbnail, alignment: .leading)
                         }
@@ -50,11 +50,40 @@ struct SessionTimelineRow: View, Equatable {
         // A row-wide context menu would intercept them and highlight the item.
     }
 
-    private var markdown: some View {
-        ChatMarkdownView(text: row.text, isStreaming: row.isRevealing, resolvesFileReferences: true)
-            .environment(\.chatLayoutTraceOwner, row.id)
-            .id(row.layoutGeneration)
-            .frame(minHeight: row.value.isStreamingText ? lineHeight : nil, alignment: .topLeading)
+    /// Assistant replies are plain Markdown, except two authored shapes:
+    /// Tavern game text (`<content>…</content>`, rendered as styled prose) and
+    /// VCP cards (raw `<div id="vcp-root">…</div>` HTML, rendered statically
+    /// in a web view). Detection is per reply; everything else keeps the
+    /// Markdown pipeline untouched.
+    @ViewBuilder private var reply: some View {
+        if let game = ChatRichText.tavernContent(row.text) {
+            ChatMarkdownView(text: game, isStreaming: row.isRevealing, resolvesFileReferences: true)
+                .environment(\.chatMarkdownFont, .system(.body, design: .serif))
+                .padding(16)
+                .background(Color(uiColor: .secondarySystemBackground), in: .rect(cornerRadius: 16))
+                .id(row.layoutGeneration)
+                .frame(minHeight: row.value.isStreamingText ? lineHeight : nil, alignment: .topLeading)
+        } else {
+            let segments = ChatRichText.segments(row.text)
+            if segments.count == 1, !segments[0].isHTML {
+                ChatMarkdownView(text: row.text, isStreaming: row.isRevealing, resolvesFileReferences: true)
+                    .environment(\.chatLayoutTraceOwner, row.id)
+                    .id(row.layoutGeneration)
+                    .frame(minHeight: row.value.isStreamingText ? lineHeight : nil, alignment: .topLeading)
+            } else {
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(segments) { segment in
+                        if segment.isHTML {
+                            ChatHTMLBlockView(html: segment.text)
+                        } else {
+                            ChatMarkdownView(text: segment.text, isStreaming: row.isRevealing, resolvesFileReferences: true)
+                                .environment(\.chatLayoutTraceOwner, row.id)
+                        }
+                    }
+                }
+                .id(row.layoutGeneration)
+            }
+        }
     }
 }
 
