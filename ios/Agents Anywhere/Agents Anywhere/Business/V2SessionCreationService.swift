@@ -13,6 +13,7 @@ struct V2SessionCreationService {
         cwd: String?,
         content: String,
         selections: [V2RuntimeSelectionScope: V2SelectionID],
+        runtimeOptions: [String: JSONValue] = [:],
         attachments: [V2LocalAttachment],
         clientMessageId: String
     ) async throws -> V2SessionCreateResponse {
@@ -46,6 +47,7 @@ struct V2SessionCreationService {
                 cwd: cwd,
                 content: normalizedContent,
                 selections: selections,
+                runtimeOptions: runtimeOptions,
                 attachments: inlineAttachments,
                 clientMessageId: clientMessageId
             )

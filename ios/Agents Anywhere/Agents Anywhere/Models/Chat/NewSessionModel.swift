@@ -103,10 +103,11 @@ final class NewSessionModel {
         // changes may discover a project without changing the chosen directory.
         if workspace.isEmpty, let saved = project { workspace = saved.workspacePath }
         identifyProject()
+        enforceFixedWorkspace()
     }
 
     @discardableResult func selectProject(_ id: String) -> Bool {
-        guard !isCreating, isValid, let value = projects.first(where: { $0.id == id }) else { return false }
+        guard !isCreating, isValid, tavernCatalog == nil, let value = projects.first(where: { $0.id == id }) else { return false }
         if connectorID != value.connectorId { focusDevice(value.connectorId, workspace: nil) }
         workspace = value.workspacePath
         identifyProject()
@@ -118,10 +119,18 @@ final class NewSessionModel {
         projectID = preference.projectIDs?[connectorID]
         if workspace.isEmpty { workspace = project?.workspacePath ?? homePaths[connectorID] ?? "" }
         identifyProject()
+        enforceFixedWorkspace()
+    }
+
+    // 酒馆实例的工作区固定为卡目的资源目录，客户端不提供修改入口。
+    private func enforceFixedWorkspace() {
+        guard let catalog = tavernCatalog, workspace != catalog.workspace else { return }
+        workspace = catalog.workspace
+        identifyProject()
     }
 
     @discardableResult func selectWorkspace(_ path: String) -> Bool {
-        guard isValid, !isCreating, !connectorID.isEmpty,
+        guard isValid, !isCreating, !connectorID.isEmpty, tavernCatalog == nil,
               ProjectWorkspacePath.key(path, deviceOS: connector?.deviceOs) != nil else { return false }
         workspace = path.trimmingCharacters(in: .whitespacesAndNewlines)
         identifyProject()
@@ -169,12 +178,16 @@ final class NewSessionModel {
             homePaths[device] = path
             resolvedHomes.insert(device)
             preference.homePaths = homePaths; persist()
-            if connectorID == device, ProjectWorkspacePath.key(workspace, deviceOS: connector?.deviceOs) == nil {
+            if connectorID == device, tavernCatalog == nil,
+               ProjectWorkspacePath.key(workspace, deviceOS: connector?.deviceOs) == nil {
                 workspace = path; identifyProject()
             }
         } catch { if isValid, !Task.isCancelled { homeErrors[device] = error.localizedDescription } }
     }
     var canAttach: Bool { prepared?.capabilities.allows("runtime.attachment") == true }
+    // 酒馆开局能力由实例携带的卡目决定（不按 provider 名称判断）。
+    var tavernCatalog: TavernCardCatalog? { runtime.flatMap(TavernCardCatalog.decode(from:)) }
+    var hasTavernOpeningFlow: Bool { runtime?.isReadyForSession == true && tavernCatalog != nil }
     var canCreate: Bool {
         isValid && !isCreating && !isPreparing && !creationUncertain && network.availability != .offline
             && ProjectWorkspacePath.key(workspace, deviceOS: connector?.deviceOs) != nil
@@ -213,6 +226,7 @@ final class NewSessionModel {
             runtimeID = available.first { $0.id == saved && $0.isReadyForSession }?.id
                 ?? available.first { $0.isReadyForSession }?.id ?? ""
         }
+        enforceFixedWorkspace()
         await prepareTarget()
         await home
     }
@@ -243,6 +257,7 @@ final class NewSessionModel {
         let changedDevice = self.connectorID != connectorID
         self.connectorID = connectorID; self.runtimeID = runtimeID
         if changedDevice { restoreProjectForDevice() }
+        enforceFixedWorkspace()
         preference.connectorID = connectorID; preference.runtimeID = runtimeID
         persist()
         async let home: Void = resolveHome()
@@ -278,8 +293,9 @@ final class NewSessionModel {
         persist()
     }
 
-    func create(text: String) async -> V2SessionMeta? {
+    func create(text: String, tavern: TavernOpeningSelection? = nil) async -> V2SessionMeta? {
         guard canCreate, let runtime else { return nil }
+        if tavern != nil, tavernCatalog == nil { return nil }
         draft.text = text
         guard draft.canAttemptSend else { return nil }
         let files = draft.attachments
@@ -342,7 +358,9 @@ final class NewSessionModel {
             didSubmit = true
             let response = try await creation.createAndStart(connectorId: connectorID, projectId: project.id, runtime: runtime.runtimeType,
                 runtimeId: runtime.id, title: nil, cwd: project.workspacePath,
-                content: text, selections: settings.selections, attachments: files.map(\.local),
+                content: text, selections: settings.selections,
+                runtimeOptions: tavern.map { ["tavern": $0.runtimeOption] } ?? [:],
+                attachments: files.map(\.local),
                 clientMessageId: submission.pending.id)
             guard isValid else { return nil }
             completed = true

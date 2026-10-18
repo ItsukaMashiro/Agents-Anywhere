@@ -15,6 +15,7 @@ struct NewSessionView: View, Equatable {
     @State private var showsTarget = false
     @State private var showsWorkspace = false
     @State private var showsFiles = false
+    @State private var showsTavern = false
     @Environment(AppState.self) private var appState
     @State private var confirmsRetry = false
     @AppStorage(ProjectSidebarPreferences.sessionListKey) private var showsSessionList = false
@@ -93,6 +94,9 @@ struct NewSessionView: View, Equatable {
                     service: service)
             }
         }
+        .sheet(isPresented: $showsTavern) {
+            TavernOpeningSheet(model: model, onCreated: onCreated)
+        }
         .confirmationDialog(String(localized: "创建结果仍未确认，再次创建可能产生重复会话。"), isPresented: $confirmsRetry, titleVisibility: .visible) {
             Button(String(localized: "保留草稿并允许重新创建")) { model.acknowledgeUncertainCreation() }
             Button(String(localized: "取消"), role: .cancel) {}
@@ -101,6 +105,9 @@ struct NewSessionView: View, Equatable {
 
     private var statusContent: some View {
         VStack(alignment: .leading, spacing: 28) {
+            if model.hasTavernOpeningFlow {
+                tavernEntry
+            }
             connectionStatus
             if model.isCreating {
                 Label(String(localized: "正在创建会话…"), appSymbol: "arrow.up.circle")
@@ -121,8 +128,23 @@ struct NewSessionView: View, Equatable {
         .multilineTextAlignment(.leading)
     }
 
+    private var tavernEntry: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button { showsTavern = true } label: {
+                Label(String(localized: "开始新游戏"), appSymbol: "sparkles")
+                    .font(.body.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+            }
+            .buttonStyle(.borderedProminent)
+            .accessibilityIdentifier("tavern.open")
+            Text(String(localized: "选一张卡片，为你的故事开场。")).font(.footnote).foregroundStyle(.secondary)
+        }
+    }
+
     private var workspaceButton: some View {
-        Button { showsWorkspace = true } label: {
+        let fixedWorkspace = model.tavernCatalog != nil
+        return Button { showsWorkspace = true } label: {
             HStack(spacing: 6) {
                 AppSymbol("folder", size: 14).foregroundStyle(.secondary)
                 Text(workspaceName).font(.subheadline.weight(.medium)).foregroundStyle(.primary)
@@ -131,7 +153,9 @@ struct NewSessionView: View, Equatable {
                     Text(model.workspace).font(.system(.footnote, design: .monospaced))
                         .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                 }
-                if model.loadingHomes.contains(model.connectorID), model.workspace.isEmpty {
+                if fixedWorkspace {
+                    AppSymbol("lock", size: 12).foregroundStyle(.secondary)
+                } else if model.loadingHomes.contains(model.connectorID), model.workspace.isEmpty {
                     ProgressView().controlSize(.mini)
                 } else { AppSymbol("chevron.down", size: 12).foregroundStyle(.secondary) }
             }
@@ -139,7 +163,7 @@ struct NewSessionView: View, Equatable {
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
-        .disabled(model.connector == nil || model.isCreating)
+        .disabled(model.connector == nil || model.isCreating || fixedWorkspace)
     }
 
     private var deviceMenu: some View {
@@ -147,7 +171,7 @@ struct NewSessionView: View, Equatable {
         Menu {
             Button(String(localized: "选择设备和 Agent"), systemImage: "sparkles") { chooseTarget() }
             Button(String(localized: "选择工作目录"), systemImage: "folder") { showsWorkspace = true }
-                .disabled(model.connector == nil)
+                .disabled(model.connector == nil || model.tavernCatalog != nil)
             if let device = model.connector {
                 Divider()
                 Button(String(localized: "设备详情"), systemImage: "info.circle") { onOpenDevice(device.id) }
