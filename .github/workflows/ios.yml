@@ -2,8 +2,10 @@ name: iOS
 
 # Compile-only check for the iOS app. The project targets a current iOS SDK and
 # is built unsigned for a generic device, so no simulator runtime, signing
-# identity, or archive step is involved. Kept as a separate workflow so the
-# path-filtered headless CI jobs stay untouched.
+# identity, or archive step is involved. The SwiftPM package (the non-UI core
+# plus its unit tests) is compiled for the macOS host but the tests are not
+# executed. Kept as a separate workflow so the path-filtered headless CI jobs
+# stay untouched.
 
 on:
   pull_request:
@@ -46,3 +48,8 @@ jobs:
             -jobs 4 \
             CODE_SIGNING_ALLOWED=NO \
             build
+      - name: Compile unit tests (SwiftPM, not run)
+        run: |
+          cd ios
+          swift --version
+          swift build --build-tests
