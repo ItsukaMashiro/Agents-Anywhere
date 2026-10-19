@@ -105,9 +105,15 @@ async def _probe_endpoint(endpoint: BridgeEndpoint, values: dict[str, Any]) -> D
         result = await client.start()
         await client.request("ping")
         extra: dict[str, Any] = {}
-        for method, key in (("runtime.getCapabilities", "runtimeCapabilities"), ("catalog.listAgentPresets", "agentPresetCatalog")):
+        for method, key, params in (
+            ("runtime.getCapabilities", "runtimeCapabilities", None),
+            ("catalog.listAgentPresets", "agentPresetCatalog", None),
+            # Slim card list only: openings are fetched per card on demand and
+            # the full catalog would exceed the connector<->server frame budget.
+            ("catalog.listTavernCards", "tavernCardCatalog", {"openings": False}),
+        ):
             try:
-                extra[key] = await client.request(method)
+                extra[key] = await client.request(method, params)
             except (RuntimeError, ValueError):
                 # Older or read-only plugins remain discoverable; they cannot advertise these controls.
                 pass

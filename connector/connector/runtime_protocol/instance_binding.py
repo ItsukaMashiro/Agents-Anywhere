@@ -517,6 +517,9 @@ class RuntimeInstance(AgentRuntime):
             runtime_id=self.instance.runtime_id,
         )
 
+    async def list_tavern_catalog(self, card: str | None = None) -> dict[str, Any]:
+        return await self.native_runtime.list_tavern_catalog(card=card)
+
     async def list_sessions(
         self,
         limit: int = 100,

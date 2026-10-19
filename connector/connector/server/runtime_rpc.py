@@ -62,6 +62,7 @@ class RuntimeRpcHandler:
         "runtime.commands",
         "runtime.modelCatalog",
         "runtime.permissionCatalog",
+        "runtime.tavernCards",
         "session.discover",
         "session.create",
         "session.sync",
@@ -193,6 +194,13 @@ class RuntimeRpcHandler:
                 runtime,
                 {"catalog": permission_catalog_payload(catalog)},
             )
+        if method == "runtime.tavernCards":
+            runtime = self._resolve_agent_runtime(params)
+            card = params.get("card")
+            catalog = await runtime.list_tavern_catalog(
+                card=card if isinstance(card, str) and card.strip() else None,
+            )
+            return self._runtime_result(runtime, {"catalog": catalog})
         if method == "session.discover":
             runtime = self._resolve_agent_runtime(params)
             return self._runtime_result(

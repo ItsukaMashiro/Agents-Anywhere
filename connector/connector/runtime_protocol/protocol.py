@@ -71,6 +71,10 @@ class AgentRuntime(ABC):
     ) -> RuntimePermissionCatalog:
         raise RuntimeUnsupportedError("list_permission_catalog")
 
+    async def list_tavern_catalog(self, card: str | None = None) -> dict[str, Any]:
+        """Tavern card catalog; pass a card id to fetch that card with openings."""
+        raise RuntimeUnsupportedError("list_tavern_catalog")
+
     async def list_sessions(
         self,
         limit: int = 100,

@@ -49,12 +49,17 @@ class DshProvider(RuntimeProvider):
         self._last_discovery: discovery.DshDiscovery | None = None
         self._last_values = provider_config.default_config_values()
         self._preset_catalog: dict[str, Any] = {}
+        self._tavern_catalog: dict[str, Any] = {}
 
     def _remember(self, result: discovery.DshDiscovery) -> None:
         self._last_discovery = result
-        catalog = (result.metadata or {}).get("agentPresetCatalog")
+        metadata = result.metadata or {}
+        catalog = metadata.get("agentPresetCatalog")
         if isinstance(catalog, dict):
             self._preset_catalog = catalog
+        tavern = metadata.get("tavernCardCatalog")
+        if isinstance(tavern, dict):
+            self._tavern_catalog = tavern
 
     @property
     def runtime(self) -> str:

@@ -129,6 +129,12 @@ class DshRuntime(AgentRuntime):
     async def list_permission_catalog(self, query: str | None = None, limit: int = 100) -> RuntimePermissionCatalog:
         return models.permission_catalog(await self._request("catalog.listPermissions", {"query": query, "limit": limit}))
 
+    async def list_tavern_catalog(self, card: str | None = None) -> dict[str, Any]:
+        params: dict[str, Any] = {"openings": True}
+        if card:
+            params["card"] = card
+        return _object(await self._request("catalog.listTavernCards", params))
+
     async def _commands_unavailable(self, session_id: str, external_session_id: str | None) -> tuple[str, str] | None:
         capabilities = await self.get_session_capabilities(session_id, external_session_id)
         capability = next(item for item in capabilities.capabilities if item.capability_id == "session.commands")
@@ -359,11 +365,15 @@ class DshRuntime(AgentRuntime):
         *, runtime_options: Mapping[str, Any] | None = None,
     ) -> RuntimeOperationResult:
         options = dict(runtime_options or {})
-        if set(options) - {"agentPreset"}:
+        if set(options) - {"agentPreset", "tavern"}:
             raise RuntimeInvalidRequestError("Unsupported DSH creation option")
         preset = options.get("agentPreset", self.config.values.get("defaultAgentPreset"))
+        tavern = options.get("tavern")
+        tavern_opening = dict(tavern) if isinstance(tavern, Mapping) else None
         return await self._send_text("session.createAndStart", session_id, None, content, cwd, attachments, client_message_id,
-                                     selections=selections, agent_preset=preset)
+                                     selections=selections, agent_preset=preset,
+                                     tavern=tavern_opening,
+                                     allow_empty=tavern_opening is not None)
 
     async def start_turn(
         self, session_id: str, external_session_id: str | None, content: str,
@@ -378,14 +388,18 @@ class DshRuntime(AgentRuntime):
         self, method: str, session_id: str, external_id: str | None, content: str,
         cwd: str | None, attachments: tuple[RuntimeAttachment, ...], client_message_id: str | None,
         *, selections: Mapping[str, str | None] | None = None, agent_preset: str | None = None,
+        tavern: Mapping[str, Any] | None = None, allow_empty: bool = False,
     ) -> RuntimeOperationResult:
-        if (not content.strip() and not attachments) or not client_message_id:
+        # A Tavern card opening is the first message, so creation may carry no user text.
+        if (not content.strip() and not attachments and not allow_empty) or not client_message_id:
             raise RuntimeInvalidRequestError("A message and a stable clientMessageId are required")
         params = {**_session_params(session_id, external_id), "content": content,
                   "clientMessageId": client_message_id, "cwd": cwd,
                   "selections": dict(selections or {})}
         if method == "session.createAndStart":
             params["agentPreset"] = agent_preset
+            if tavern is not None:
+                params["tavern"] = dict(tavern)
         if attachments:
             capability_set = _object(await self._request("runtime.getCapabilities"))
             if not provider_config.dsh_capabilities(capability_set)["attachments"]:
