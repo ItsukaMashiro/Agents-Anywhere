@@ -182,7 +182,7 @@ private struct TavernGameDetailsView: View {
     }
 
     private var canStart: Bool {
-        model.canCreate && !model.draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        model.canStartTavern
     }
 
     var body: some View {
@@ -212,7 +212,7 @@ private struct TavernGameDetailsView: View {
                 if let creationError {
                     Text(creationError).foregroundStyle(.red)
                 } else {
-                    Text(String(localized: "开局后会作为你的第一条消息发送。"))
+                    Text(String(localized: "开局后会作为你的第一条消息发送；留空则直接使用开场白开局。"))
                 }
             }
             Section {

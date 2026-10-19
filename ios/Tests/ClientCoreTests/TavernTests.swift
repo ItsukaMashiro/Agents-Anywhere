@@ -110,6 +110,22 @@ import Testing
         #expect(request.body?["cwd"]?.stringValue == "/workspace")
     }
 
+    @Test func tavernCreationAllowsEmptyFirstMessage() async throws {
+        // 契约 A：tavern 开局允许空 content（开场白即首条消息），服务端已放行。
+        let http = tavernTransport(); let model = make(http)
+        await model.refresh(connectors: try devices())
+        #expect(model.canStartTavern, "An empty first message must not block a tavern opening.")
+        #expect(!model.canCreate, "Plain creation still requires draft content.")
+        let session = await model.create(text: "",
+            tavern: TavernOpeningSelection(card: "cards/inn.md", openingId: "", userName: "林克"))
+        #expect(session?.id == "session")
+        let request = try #require(http.calls.first { $0.path.hasSuffix("create-and-start") })
+        #expect(request.body?["content"]?.stringValue == "")
+        let tavern = try #require(request.body?["runtimeOptions"]?["tavern"])
+        #expect(tavern["card"]?.stringValue == "cards/inn.md")
+        #expect(tavern["openingId"]?.stringValue == "")
+    }
+
     @Test func plainCreationSendsEmptyRuntimeOptions() async throws {
         let http = tavernTransport(); let model = make(http)
         model.draft.text = "普通消息"

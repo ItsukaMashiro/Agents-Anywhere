@@ -18,7 +18,8 @@ struct V2SessionCreationService {
         clientMessageId: String
     ) async throws -> V2SessionCreateResponse {
         let normalizedContent = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        if normalizedContent.isEmpty, attachments.isEmpty {
+        // 契约 A：tavern 开局允许空 content（开场白即首条消息）；其余创建仍要求文本或附件。
+        if normalizedContent.isEmpty, attachments.isEmpty, runtimeOptions["tavern"] == nil {
             throw V2BusinessError.emptyMessage
         }
         if attachments.count > 10 {

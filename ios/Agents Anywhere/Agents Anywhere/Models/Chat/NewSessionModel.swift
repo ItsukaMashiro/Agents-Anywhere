@@ -200,11 +200,15 @@ final class NewSessionModel {
             return match?.openings ?? []
         } catch { return [] }
     }
-    var canCreate: Bool {
+    var canCreate: Bool { canStart(requiringDraftContent: true) }
+    /// 酒馆开局的首条消息可选（契约 A：开场白即首条消息），空草稿不阻塞开局。
+    var canStartTavern: Bool { canStart(requiringDraftContent: false) }
+    private func canStart(requiringDraftContent: Bool) -> Bool {
         isValid && !isCreating && !isPreparing && !creationUncertain && network.availability != .offline
             && ProjectWorkspacePath.key(workspace, deviceOS: connector?.deviceOs) != nil
             && connector?.status == .online && runtime?.isReadyForSession == true && prepared != nil
-            && settings.hasValidSelections && draft.canAttemptSend && (draft.attachments.isEmpty || canAttach)
+            && settings.hasValidSelections && (!requiringDraftContent || draft.canAttemptSend)
+            && (draft.attachments.isEmpty || canAttach)
     }
 
     func updateNetwork(_ status: V2NetworkStatus) {
@@ -306,10 +310,11 @@ final class NewSessionModel {
     }
 
     func create(text: String, tavern: TavernOpeningSelection? = nil) async -> V2SessionMeta? {
-        guard canCreate, let runtime else { return nil }
-        if tavern != nil, tavernCatalog == nil { return nil }
+        let isTavernOpening = tavern != nil
+        guard (isTavernOpening ? canStartTavern : canCreate), let runtime else { return nil }
+        if isTavernOpening, tavernCatalog == nil { return nil }
         draft.text = text
-        guard draft.canAttemptSend else { return nil }
+        if !isTavernOpening { guard draft.canAttemptSend else { return nil } }
         let files = draft.attachments
         isCreating = true; error = nil
         saveSelections()
