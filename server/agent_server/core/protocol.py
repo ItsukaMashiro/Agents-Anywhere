@@ -168,6 +168,13 @@ class ProtocolModelCatalogResponse(ProtocolWireModel):
     serverTime: str
 
 
+class ProtocolTavernCardsResponse(ProtocolWireModel):
+    """Opaque Tavern card catalog passthrough; the server does not model card shapes."""
+
+    catalog: dict[str, Any]
+    serverTime: str
+
+
 class ProtocolPermissionItem(ProtocolWireModel):
     displayName: str
     id: str

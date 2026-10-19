@@ -25,6 +25,7 @@ from agent_server.core.protocol import (
     ProtocolModelCatalogResponse,
     ProtocolPermissionCatalog,
     ProtocolPermissionCatalogResponse,
+    ProtocolTavernCardsResponse,
 )
 from agent_server.core.utc import utc_now
 from agent_server.deps import current_user_id, get_device_runtime_service, get_rpc
@@ -386,6 +387,39 @@ def _raise_device_runtime_error(exc: DeviceRuntimeError) -> None:
     raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
+@router.get(
+    "/{connector_id}/runtimes/{runtime_id}/catalogs/tavern-cards",
+    response_model=ProtocolTavernCardsResponse,
+)
+async def get_connector_runtime_tavern_cards(
+    connector_id: str,
+    runtime_id: str,
+    card: str | None = None,
+    service: DeviceRuntimeService = Depends(get_device_runtime_service),
+    manager: ConnectorRpcManager = Depends(get_rpc),
+    user_id: str = Depends(current_user_id),
+) -> ProtocolTavernCardsResponse:
+    try:
+        runtime = await service.ensure_active_running(
+            connector_id, runtime_id, user_id=user_id
+        )
+        result = await request_runtime_rpc(
+            manager,
+            connector_id,
+            "runtime.tavernCards",
+            runtime=runtime.runtimeType,
+            runtime_id=runtime.runtimeId,
+            limit=None,
+            extra={"card": card} if card else None,
+        )
+    except DeviceRuntimeError as exc:
+        _raise_device_runtime_error(exc)
+    raw_catalog = result.get("catalog") if isinstance(result, dict) else None
+    if not isinstance(raw_catalog, dict):
+        raise_invalid_runtime_response("invalid_runtime_catalog")
+    return ProtocolTavernCardsResponse(catalog=raw_catalog, serverTime=utc_now())
+
+
 async def request_runtime_rpc(
     manager: ConnectorRpcManager,
     connector_id: str,
@@ -394,10 +428,13 @@ async def request_runtime_rpc(
     runtime: str,
     runtime_id: str,
     limit: int | None,
+    extra: dict[str, Any] | None = None,
 ) -> Any:
     params: dict[str, Any] = {"runtime": runtime, "runtimeId": runtime_id}
     if limit is not None:
         params["limit"] = limit
+    if extra:
+        params.update(extra)
     try:
         return await manager.request(connector_id, method, params, timeout=30)
     except ConnectorOfflineError as exc:
