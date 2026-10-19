@@ -3,6 +3,7 @@ import type {} from '@deepseek-ai/dsh-agent-preset-registry'
 import type {} from '@deepseek-ai/dsh-permission-presets'
 import type {} from '@deepseek-ai/dsh-api-session-controller'
 import { modelSelectionId, permissionSelectionId } from './selections.js'
+import type {} from './tavern.js'
 import { BridgeError } from './errors.js'
 
 export interface ReasoningItem { id: string, title: string, selectionId: string, enabled: boolean, description?: string }
@@ -115,6 +116,14 @@ export class RuntimeCatalogs {
       uiField: { component: 'select', options: presets.map(preset => ({ value: preset.id, label: preset.name,
         description: preset.description, disabled: !preset.enabled, disabledReason: preset.disabledReason })) },
     }
+  }
+
+  /** Character-card catalog of the DSH Tavern plugin; opening texts are previews only. */
+  async tavernCards(options?: { card?: string | undefined; openings?: boolean | undefined }) {
+    const game = this.ctx.get('tavernGame')
+    if (!game) throw new BridgeError('UNSUPPORTED_OPERATION', 'This DSH deployment does not provide Tavern games.')
+    const catalog = await game.catalog(options)
+    return { runtime: 'tavern', revision: 1, ...catalog }
   }
 }
 

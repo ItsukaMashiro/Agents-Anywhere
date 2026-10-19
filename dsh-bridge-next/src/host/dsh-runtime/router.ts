@@ -7,6 +7,7 @@ import type { SessionQueryEngine, SessionRecord } from '@deepseek-ai/dsh-session
 import { capabilities } from './capabilities.js'
 import { BridgeError, publicError } from './errors.js'
 import { parseSelections } from './selections.js'
+import { parseTavern } from './tavern.js'
 import { projectHistoryAsync } from './history.js'
 import { sessionId, nativeSessionId } from './identity.js'
 import type { NativeRuntime } from './native.js'
@@ -87,10 +88,11 @@ export class RuntimeRouter {
         const attachments = parseAttachments(params.attachments)
         if (typeof params.sessionId !== 'string' || !params.sessionId || typeof params.content !== 'string' || typeof params.clientMessageId !== 'string') throw new BridgeError('INVALID_PARAMS', 'Session ID, text and clientMessageId are required.')
         const create = method === 'session.createAndStart'
+        const tavern = create ? parseTavern(params.tavern) : undefined
         const id = create ? nativeSessionId(this.namespace, params.sessionId) as SessionId : await this.resolve(params, signal, true)
         try {
           await native.send(id, params.content, params.clientMessageId, typeof params.cwd === 'string' ? params.cwd : undefined, create,
-            parseSelections(params.selections), typeof params.agentPreset === 'string' ? params.agentPreset : undefined, signal, attachments, params.sessionId)
+            parseSelections(params.selections), typeof params.agentPreset === 'string' ? params.agentPreset : undefined, signal, attachments, params.sessionId, tavern)
         } catch (error) {
           const failure = publicError(error)
           const sourceState = await native.source.state(id)
@@ -115,6 +117,13 @@ export class RuntimeRouter {
       case 'catalog.listAgentPresets': {
         if (!this.reader.native) throw new BridgeError('UNSUPPORTED_OPERATION', 'Agent modes are unavailable.')
         return this.reader.native.catalogs.agentPresets()
+      }
+      case 'catalog.listTavernCards': {
+        if (!this.reader.native) throw new BridgeError('UNSUPPORTED_OPERATION', 'Tavern cards are unavailable.')
+        return this.reader.native.catalogs.tavernCards({
+          card: typeof params.card === 'string' ? params.card : undefined,
+          openings: typeof params.openings === 'boolean' ? params.openings : undefined,
+        })
       }
       case 'session.updateSelections': {
         const native = this.reader.native

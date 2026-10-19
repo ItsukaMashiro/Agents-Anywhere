@@ -20,6 +20,7 @@ import { RuntimeCatalogs } from './catalogs.js'
 import { RuntimeConfiguration } from './configuration.js'
 import { RuntimeCommands } from './commands.js'
 import type { Selections } from './selections.js'
+import type { TavernOpening } from './tavern.js'
 import { capabilities } from './capabilities.js'
 import { CreationIntents } from './creation-intents.js'
 import { RuntimeAttachments, attachmentFingerprint, attachmentReferences, type AttachmentSnapshot, type StagedAttachment } from './attachments.js'
@@ -226,8 +227,9 @@ export class NativeRuntime {
 
   async send(id: SessionId, text: string, requestId: string, cwd?: string, create = false,
     selections: Selections = {}, agentPreset?: string, signal = new AbortController().signal,
-    images: readonly StagedAttachment[] = [], platformId?: string): Promise<void> {
-    if ((!text.trim() && !images.length) || text.length > 1_000_000 || !requestId || requestId.length > 512) {
+    images: readonly StagedAttachment[] = [], platformId?: string, tavern?: TavernOpening): Promise<void> {
+    // A Tavern opening is the first message: card creation may carry no user text.
+    if ((!text.trim() && !images.length && !(create && tavern)) || text.length > 1_000_000 || !requestId || requestId.length > 512) {
       throw new BridgeError('INVALID_PARAMS', 'A text message and stable client message ID are required.')
     }
     await this.write(id, signal, async () => {
@@ -255,6 +257,7 @@ export class NativeRuntime {
         } catch { throw new BridgeError('INVALID_PARAMS', 'The workspace must be an accessible directory on the DSH device.') }
         fingerprint = digest(canonicalJson({ requestId, content: text, cwd: path, agentPreset: agentPreset ?? null,
           model: selections.model ?? null, permission: selections.permission ?? null,
+          tavern: tavern ? { card: tavern.card, openingId: tavern.openingId, userName: tavern.userName } : null,
           ...(images.length ? { attachments: attachmentReferences(images).map(image => ({ ...image })) } : {}) }))
         if (intent && (intent.requestId !== requestId || intent.fingerprint !== fingerprint)) {
           throw new BridgeError('INVALID_PARAMS', 'This session was created with different initialization parameters.')
@@ -274,11 +277,12 @@ export class NativeRuntime {
       await this.configuration.validate(selections, create)
       if (create) {
         if (log?.events.some(event => event.type === 'turn/start')) throw new BridgeError('INVALID_PARAMS', 'This session has already started. Continue it with a new message.')
-        const preset = await this.configuration.validatePreset(agentPreset)
+        const preset = await this.configuration.validatePreset(tavern ? 'tavern' : agentPreset)
         if (!intent) await this.creations.write(id, { requestId, fingerprint: fingerprint! })
         await this.configuration.controller().create({ sessionId: id, cwd: path!, agentPreset: preset })
         const workspace = await this.ctx.workspaceRegistry.create(path!)
         await workspace.attachSession(id)
+        if (tavern) await this.openTavern(id, tavern)
       }
       const agent = await this.configuration.agent(id)
       await this.configuration.apply(agent, selections, create, signal)
@@ -289,10 +293,25 @@ export class NativeRuntime {
       if (images.length && !receipt) await this.attachments.remember(id, messageId, {
         platformId: platformId!, fingerprint: attachmentFingerprint(text, images), attachments: attachmentReferences(images),
       })
-      await this.configuration.controller().prompt({ sessionId: id, requestId: messageId as SessionPromptRequest['requestId'],
-        mode: 'queue', content: [...(text ? [{ type: 'text' as const, text }] : []), ...imageParts] }, signal)
+      // For a card-only creation the opening from startChat is the first message;
+      // prompting with empty content would splice an empty user turn.
+      if (text || imageParts.length || !(create && tavern)) {
+        await this.configuration.controller().prompt({ sessionId: id, requestId: messageId as SessionPromptRequest['requestId'],
+          mode: 'queue', content: [...(text ? [{ type: 'text' as const, text }] : []), ...imageParts] }, signal)
+      }
       await this.ctx.sessions.flush(agent.session)
     })
+  }
+
+  /** Bind the freshly created session to a Tavern character card, then pin the title to the card name. */
+  private async openTavern(id: SessionId, opening: TavernOpening): Promise<void> {
+    const game = this.ctx.get('tavernGame')
+    if (!game) throw new BridgeError('UNSUPPORTED_OPERATION', 'Tavern is not available on this DSH host.')
+    if (!(await game.binding(id))) {
+      await game.startChat({ cardPath: opening.card, sessionId: id, openingId: opening.openingId, userName: opening.userName })
+    }
+    const bound = await game.binding(id)
+    if (bound?.cardName) await this.configuration.controller().rename({ sessionId: id, title: bound.cardName })
   }
 
   async updateSelections(id: SessionId, selections: Selections, signal: AbortSignal) {
