@@ -9,9 +9,12 @@ struct TavernOpeningSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var path: [TavernStep] = []
     @State private var search = ""
+    // 精简卡目不携带 openings；点卡时按需拉取，结果按卡 path 缓存，失败/空保持降级。
+    @State private var openingsCache: [String: [TavernCardOpening]] = [:]
+    @State private var loadingCardPath: String?
 
     private enum TavernStep: Hashable {
-        case opening(TavernCard)
+        case opening(TavernCard, openings: [TavernCardOpening])
         case details(TavernCard, openingId: String)
     }
 
@@ -24,8 +27,8 @@ struct TavernOpeningSheet: View {
                 .searchable(text: $search, prompt: String(localized: "搜索卡片"))
                 .navigationDestination(for: TavernStep.self) { step in
                     switch step {
-                    case .opening(let card):
-                        TavernOpeningPager(card: card) { openingID in
+                    case .opening(let card, let openings):
+                        TavernOpeningPager(card: card, openings: openings) { openingID in
                             path.append(.details(card, openingId: openingID))
                         }
                     case .details(let card, let openingID):
@@ -65,11 +68,7 @@ struct TavernOpeningSheet: View {
                         Section(group.isEmpty ? String(localized: "未分组") : group) {
                             ForEach(cards) { card in
                                 Button {
-                                    if let openings = card.openings, !openings.isEmpty {
-                                        path.append(.opening(card))
-                                    } else {
-                                        path.append(.details(card, openingId: ""))
-                                    }
+                                    select(card)
                                 } label: {
                                     HStack(spacing: 10) {
                                         VStack(alignment: .leading, spacing: 3) {
@@ -84,8 +83,12 @@ struct TavernOpeningSheet: View {
                                             Image(systemName: "star.fill").font(.caption)
                                                 .foregroundStyle(.tertiary)
                                         }
-                                        Image(systemName: "chevron.right").font(.caption)
-                                            .foregroundStyle(.tertiary)
+                                        if loadingCardPath == card.path {
+                                            ProgressView().controlSize(.small)
+                                        } else {
+                                            Image(systemName: "chevron.right").font(.caption)
+                                                .foregroundStyle(.tertiary)
+                                        }
                                     }
                                     .contentShape(.rect)
                                 }
@@ -97,15 +100,35 @@ struct TavernOpeningSheet: View {
             }
         }
     }
+
+    // 进入某卡：先按需拉取该卡开场白（同卡结果缓存）。非空进轮播；
+    // 失败或为空保持现有降级——直接进开局设置，openingId 传空串。
+    private func select(_ card: TavernCard) {
+        if let openings = card.openings, !openings.isEmpty {
+            path.append(.opening(card, openings: openings))
+            return
+        }
+        if let cached = openingsCache[card.path] {
+            path.append(cached.isEmpty ? .details(card, openingId: "") : .opening(card, openings: cached))
+            return
+        }
+        guard loadingCardPath == nil else { return }
+        loadingCardPath = card.path
+        Task {
+            let openings = await model.fetchTavernOpenings(for: card)
+            openingsCache[card.path] = openings
+            loadingCardPath = nil
+            path.append(openings.isEmpty ? .details(card, openingId: "") : .opening(card, openings: openings))
+        }
+    }
 }
 
 // 开场白轮播：逐条翻阅，也可跳过使用默认开场白（openingId 传空串）。
 private struct TavernOpeningPager: View {
     let card: TavernCard
+    let openings: [TavernCardOpening]
     let onChoose: (_ openingID: String) -> Void
     @State private var index = 0
-
-    private var openings: [TavernCardOpening] { card.openings ?? [] }
 
     var body: some View {
         VStack(spacing: 0) {

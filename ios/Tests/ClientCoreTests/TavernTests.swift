@@ -31,6 +31,15 @@ import Testing
     private func tavernTransport() -> TestHTTPTransport {
         let http = TestHTTPTransport()
         http.respond = { call in
+            if call.path.hasSuffix("/catalogs/tavern-cards") {
+                // 模拟服务端：按 card path 过滤，只返回该卡（含 openings）。
+                let cardPath = call.query.first { $0.name == "card" }?.value
+                let cards = (Self.catalogJSON["cards"] as! [[String: Any]]).filter { ($0["path"] as? String) == cardPath }
+                return try JSONSerialization.data(withJSONObject: [
+                    "catalog": ["workspace": Self.catalogJSON["workspace"]!, "groups": Self.catalogJSON["groups"]!, "cards": cards],
+                    "serverTime": "2026-01-01T00:00:00Z",
+                ])
+            }
             if call.path.hasSuffix("/runtimes") {
                 var object = try fixtureObject("runtimes")
                 var instance = (object["runtimes"] as! [[String: Any]])[0]
@@ -114,5 +123,37 @@ import Testing
         } else {
             Issue.record("Plain creation must still send an (empty) runtimeOptions object.")
         }
+    }
+
+    @Test func tavernOpeningsFetchedOnDemandByCardPath() async throws {
+        let http = tavernTransport(); let model = make(http)
+        await model.refresh(connectors: try devices())
+        let catalog = try #require(model.tavernCatalog)
+        let card = try #require(catalog.cards.first { $0.path == "cards/sea.md" })
+        #expect(card.openings == nil, "The slim catalog carries no openings; the sheet must fetch them on demand.")
+        let openings = await model.fetchTavernOpenings(for: card)
+        #expect(openings.map(\.id) == ["op1", "op2"])
+        #expect(openings.map(\.text) == ["雾从海面漫上来……", "你推开舱门。"])
+        let call = try #require(http.calls.first { $0.path.hasSuffix("/catalogs/tavern-cards") })
+        #expect(call.query.contains { $0.name == "card" && $0.value == "cards/sea.md" }, "The card parameter is the card path.")
+    }
+
+    @Test func tavernOpeningsEmptyOrFailedFetchFallsBackToDefault() async throws {
+        let http = tavernTransport(); let model = make(http)
+        await model.refresh(connectors: try devices())
+        let catalog = try #require(model.tavernCatalog)
+        // 无开场白的卡：服务端返回该卡但不带 openings → 空数组，调用方保持默认开场白降级。
+        let inn = try #require(catalog.cards.first { $0.path == "cards/inn.md" })
+        let empty = await model.fetchTavernOpenings(for: inn)
+        #expect(empty.isEmpty)
+        // 请求失败同样返回空数组，不抛出。
+        let previous = http.respond
+        http.respond = { call in
+            if call.path.hasSuffix("/catalogs/tavern-cards") { throw HTTPError.invalidResponse }
+            return try await previous?(call) ?? http.defaultResponse(call)
+        }
+        let sea = try #require(catalog.cards.first { $0.path == "cards/sea.md" })
+        let failed = await model.fetchTavernOpenings(for: sea)
+        #expect(failed.isEmpty)
     }
 }

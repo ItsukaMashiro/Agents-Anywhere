@@ -16,6 +16,7 @@ protocol V2ConnectorAPIProtocol {
     func runtimeCapabilities(connectorId: V2ConnectorID, runtimeId: V2RuntimeID) async throws -> V2RuntimeCapabilityResponse
     func modelCatalog(connectorId: V2ConnectorID, runtimeId: V2RuntimeID) async throws -> V2ModelCatalogResponse
     func permissionCatalog(connectorId: V2ConnectorID, runtimeId: V2RuntimeID) async throws -> V2PermissionCatalogResponse
+    func tavernCards(connectorId: V2ConnectorID, runtimeId: V2RuntimeID, card: String?) async throws -> V2TavernCardsResponse
     func commands(connectorId: V2ConnectorID, runtimeId: V2RuntimeID) async throws -> V2RuntimeCommandListResponse
     func preferences(connectorId: V2ConnectorID) async throws -> V2ConnectorPreferencesResponse
     func readWorkspaceText(connectorId: V2ConnectorID, root: String, request: V2WorkspaceTextRequest) async throws -> V2WorkspaceTextResponse
@@ -242,6 +243,16 @@ struct V2ConnectorAPI: V2ConnectorAPIProtocol {
 
     func permissionCatalog(connectorId: V2ConnectorID, runtimeId: V2RuntimeID) async throws -> V2PermissionCatalogResponse {
         try await get(path: runtimePath(connectorId, runtimeId: runtimeId, suffix: "catalogs/permission"))
+    }
+
+    // 按需开场白：card 传卡的 path（服务端按 path 精确过滤），省略时返回全卡目。
+    func tavernCards(connectorId: V2ConnectorID, runtimeId: V2RuntimeID, card: String?) async throws -> V2TavernCardsResponse {
+        let request = HTTPRequest<EmptyRequestBody, V2TavernCardsResponse>(
+            method: .get,
+            path: runtimePath(connectorId, runtimeId: runtimeId, suffix: "catalogs/tavern-cards"),
+            queryItems: card.map { [URLQueryItem(name: "card", value: $0)] } ?? []
+        )
+        return try await transport.send(request)
     }
 
     func commands(connectorId: V2ConnectorID, runtimeId: V2RuntimeID) async throws -> V2RuntimeCommandListResponse {

@@ -188,6 +188,18 @@ final class NewSessionModel {
     // 酒馆开局能力由实例携带的卡目决定（不按 provider 名称判断）。
     var tavernCatalog: TavernCardCatalog? { runtime.flatMap(TavernCardCatalog.decode(from:)) }
     var hasTavernOpeningFlow: Bool { runtime?.isReadyForSession == true && tavernCatalog != nil }
+
+    // 按需开场白：精简卡目不携带 openings，进入某卡时按卡 path 拉取该卡开场白。
+    // 失败或为空返回空数组，调用方保持默认开场白的现有降级。
+    func fetchTavernOpenings(for card: TavernCard) async -> [TavernCardOpening] {
+        guard isValid, !Task.isCancelled, !connectorID.isEmpty, !runtimeID.isEmpty else { return [] }
+        do {
+            let response = try await devices.connectorAPI.tavernCards(connectorId: connectorID, runtimeId: runtimeID, card: card.path)
+            guard isValid, !Task.isCancelled else { return [] }
+            let match = response.catalog.cards.first { $0.path == card.path } ?? response.catalog.cards.first
+            return match?.openings ?? []
+        } catch { return [] }
+    }
     var canCreate: Bool {
         isValid && !isCreating && !isPreparing && !creationUncertain && network.availability != .offline
             && ProjectWorkspacePath.key(workspace, deviceOS: connector?.deviceOs) != nil

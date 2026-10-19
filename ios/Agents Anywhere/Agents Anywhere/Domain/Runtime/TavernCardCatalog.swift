@@ -21,6 +21,13 @@ nonisolated struct TavernCardOpening: Decodable, Hashable {
     let text: String
 }
 
+// 按需开场白响应：GET /connectors/{id}/runtimes/{id}/catalogs/tavern-cards?card=<卡 path>。
+// catalog 形状与精简卡目一致；带 card 参数时 cards 只含该卡并携带 openings（≤8 条、每条 ≤400 码点）。
+nonisolated struct V2TavernCardsResponse: Decodable, Hashable {
+    let catalog: TavernCardCatalog
+    let serverTime: String
+}
+
 nonisolated struct TavernCardScript: Decodable, Hashable {
     let path: String
     let title: String
