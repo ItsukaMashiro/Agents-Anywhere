@@ -29,7 +29,13 @@ def dsh_config_schema() -> dict[str, Any]:
                 "type": "string",
                 "minLength": 1,
                 "title": "DSH home",
-                "description": "Optional absolute DSH_HOME of the DSH host; it identifies its sessions. The bridge endpoint is always read from ~/.agents-anywhere/dsh-bridge.",
+                "description": "Optional absolute DSH_HOME of the DSH host; it identifies its sessions. The bridge endpoint is read from bridgeDir when set, otherwise from ~/.agents-anywhere/dsh-bridge.",
+            },
+            "bridgeDir": {
+                "type": "string",
+                "minLength": 1,
+                "title": "Bridge 目录",
+                "description": "Absolute directory holding this DSH host's bridge endpoint.json; set it for secondary DSH instances (e.g. DSH Tavern) so they do not contend for the shared per-user bridge lease.",
             },
             "startupTimeoutMs": {
                 **positive_timeout,
@@ -79,6 +85,14 @@ def normalized_config_values(raw: dict[str, Any]) -> dict[str, Any]:
         ):
             raise RuntimeInvalidRequestError("dshHome must be an absolute path")
         values["dshHome"] = canonical_path(dsh_home)
+    bridge_dir = values.get("bridgeDir")
+    if bridge_dir is not None:
+        if (
+            not isinstance(bridge_dir, str)
+            or not Path(bridge_dir).expanduser().is_absolute()
+        ):
+            raise RuntimeInvalidRequestError("bridgeDir must be an absolute path")
+        values["bridgeDir"] = canonical_path(bridge_dir)
     for key in ("startupTimeoutMs", "requestTimeoutMs", "restartBackoffMs"):
         value = values.get(key)
         if (
@@ -111,13 +125,16 @@ def dsh_home(values: dict[str, Any]) -> Path:
     return Path(canonical_path(path))
 
 
-def bridge_directory() -> Path:
-    """Fixed per-user rendezvous shared with the plugin; DSH_HOME does not move it."""
+def bridge_directory(values: dict[str, Any] | None = None) -> Path:
+    """Per-user rendezvous shared with the plugin; `bridgeDir` relocates it per instance."""
+    configured = (values or {}).get("bridgeDir")
+    if isinstance(configured, str) and configured:
+        return Path(canonical_path(configured))
     return Path(canonical_path(runtime_owner.system_home() / ".agents-anywhere" / "dsh-bridge"))
 
 
-def endpoint_path() -> Path:
-    return bridge_directory() / "endpoint.json"
+def endpoint_path(values: dict[str, Any] | None = None) -> Path:
+    return bridge_directory(values) / "endpoint.json"
 
 
 def legacy_endpoint_path(values: dict[str, Any]) -> Path:

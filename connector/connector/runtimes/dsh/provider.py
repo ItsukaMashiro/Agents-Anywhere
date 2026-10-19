@@ -228,7 +228,7 @@ class DshProvider(RuntimeProvider):
     ) -> tuple[RuntimeResourceClaim, ...]:
         values = dict(config.values)
         dsh_home = str(provider_config.dsh_home(values))
-        endpoint = str(provider_config.endpoint_path())
+        endpoint = str(provider_config.endpoint_path(values))
         return (
             RuntimeResourceClaim(
                 kind="dsh_home",

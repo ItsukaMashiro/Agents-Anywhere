@@ -5,6 +5,10 @@ import os
 from pathlib import Path
 from typing import Any
 
+import pytest
+
+from connector.runtime_protocol import RuntimeInvalidRequestError
+from connector.runtimes.dsh import provider_config
 from connector.runtimes.dsh.discovery import BridgeEndpoint, DshDiscovery
 from connector.runtimes.tavern.provider import TavernProvider
 
@@ -77,3 +81,31 @@ def test_tavern_discover_without_bridge_keeps_schema_usable(tmp_path: Path) -> N
         assert descriptor.config_schema.defaults["dshHome"] == home
 
     asyncio.run(run())
+
+
+def test_tavern_defaults_isolate_the_bridge_lease(tmp_path: Path) -> None:
+    """A second DSH instance must read its endpoint under its own home."""
+    home = tmp_path / "home"
+    provider = TavernProvider(dsh_home=str(home))
+    bridge_dir = str(Path(home) / "agents-anywhere" / "bridge")
+
+    async def run() -> None:
+        descriptor = await provider.discover()
+        assert descriptor.config_schema.defaults["bridgeDir"] == bridge_dir
+        config = await provider.validate_config({"dshHome": str(home)})
+        # canonical_path may normalize drive-letter case on Windows.
+        assert config.values["bridgeDir"].lower() == bridge_dir.lower()
+
+    asyncio.run(run())
+
+    values = provider_config.normalized_config_values({"bridgeDir": bridge_dir})
+    endpoint = provider_config.endpoint_path(values)
+    assert str(endpoint).lower() == str(Path(bridge_dir) / "endpoint.json").lower()
+    # Without bridgeDir the shared per-user rendezvous stays in place.
+    assert provider_config.endpoint_path({}).name == "endpoint.json"
+    assert provider_config.endpoint_path({}) != endpoint
+
+
+def test_bridge_dir_must_be_absolute() -> None:
+    with pytest.raises(RuntimeInvalidRequestError):
+        provider_config.normalized_config_values({"bridgeDir": "relative/bridge"})

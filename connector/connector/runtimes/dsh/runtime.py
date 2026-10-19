@@ -408,7 +408,7 @@ class DshRuntime(AgentRuntime):
         directory = (
             self._client.endpoint.path.parent
             if self._client is not None
-            else provider_config.bridge_directory()
+            else provider_config.bridge_directory(self.config.values)
         )
         async with staged_attachments(self.host, session_id, attachments, directory) as images:
             if images:

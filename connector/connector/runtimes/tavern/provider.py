@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import dataclasses
 import os
+from pathlib import Path
 
 from connector.runtimes.dsh.provider import DshProvider
 
@@ -23,6 +24,10 @@ class TavernProvider(DshProvider):
     def __init__(self, dsh_home: str | None = None) -> None:
         super().__init__()
         self._tavern_dsh_home = dsh_home or DEFAULT_TAVERN_DSH_HOME
+        # A second DSH instance must not contend for the shared per-user bridge
+        # lease: point it at the bridge directory under its own DSH home, which
+        # is also where the legacy endpoint publication lands for it.
+        self._tavern_bridge_dir = str(Path(self._tavern_dsh_home) / "agents-anywhere" / "bridge")
         self._last_values = {**self._last_values, "dshHome": self._tavern_dsh_home}
 
     @property
@@ -56,13 +61,19 @@ class TavernProvider(DshProvider):
             metadata["tavernCardCatalog"] = dict(self._tavern_catalog)
         return dataclasses.replace(
             schema,
-            defaults={**schema.defaults, "dshHome": self._tavern_dsh_home},
+            defaults={
+                **schema.defaults,
+                "dshHome": self._tavern_dsh_home,
+                "bridgeDir": self._tavern_bridge_dir,
+            },
             metadata=metadata,
         )
 
     async def validate_config(self, values):
         if not values.get("dshHome"):
             values = {**values, "dshHome": self._tavern_dsh_home}
+        if not values.get("bridgeDir"):
+            values = {**values, "bridgeDir": self._tavern_bridge_dir}
         return await super().validate_config(values)
 
     async def create_runtime(self, config, host):

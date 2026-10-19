@@ -31,7 +31,7 @@ class DshDiscovery:
 
 def _static_metadata(values: dict[str, Any]) -> dict[str, Any]:
     return {
-        "endpoint": str(provider_config.endpoint_path()),
+        "endpoint": str(provider_config.endpoint_path(values)),
         "storageMode": "dsh-native",
         "sameSessionWriterLimit": 1,
         "crossProcessWriterExclusion": False,
@@ -140,7 +140,7 @@ def load_endpoints(values: dict[str, Any]) -> list[BridgeEndpoint]:
     """
     endpoints: list[BridgeEndpoint] = []
     errors: list[Exception] = []
-    paths = (provider_config.endpoint_path(), provider_config.legacy_endpoint_path(values))
+    paths = (provider_config.endpoint_path(values), provider_config.legacy_endpoint_path(values))
     for path in dict.fromkeys(paths):
         try:
             endpoints.append(read_endpoint(path))
