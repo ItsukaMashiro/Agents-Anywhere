@@ -7,6 +7,7 @@ import { normalizeServerOrigin } from './account/server.js'
 
 export interface Config {
   dshHome?: string
+  bridgeDir?: string
   apiBaseUrl?: string
   stateRoot?: string
   connectorSourceDir?: string
@@ -15,6 +16,7 @@ export interface Config {
 
 export const Config: z<Config> = z.object({
   dshHome: z.string(),
+  bridgeDir: z.string(),
   apiBaseUrl: z.string().default(CLOUD_API_BASE_URL),
   stateRoot: z.string(),
   connectorSourceDir: z.string(),
@@ -33,8 +35,16 @@ export function stateRoot(config: Config): string {
   return config.stateRoot ?? join(userInfo().homedir, '.agents-anywhere', 'dsh-bridge-next')
 }
 
-/** Fixed per-user rendezvous with the Connector; DSH_HOME and stateRoot do not move it. */
-export function bridgeDirectory(): string {
+/**
+ * Per-user rendezvous with the Connector. `bridgeDir` relocates it for multi-instance
+ * setups (e.g. a second DSH host such as DSH Tavern), so each instance owns its own
+ * lease and endpoint instead of contending for the shared one.
+ */
+export function bridgeDirectory(config: Config = {}): string {
+  if (config.bridgeDir !== undefined) {
+    if (!isAbsolute(config.bridgeDir)) throw new Error('bridgeDir 必须是绝对路径。')
+    return config.bridgeDir
+  }
   return join(userInfo().homedir, '.agents-anywhere', 'dsh-bridge')
 }
 
