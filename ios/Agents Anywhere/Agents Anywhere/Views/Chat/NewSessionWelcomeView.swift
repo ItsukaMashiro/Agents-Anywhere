@@ -5,6 +5,8 @@ import SwiftUI
 struct NewSessionWelcomeView: View {
     let deviceName: String?
     let agentName: String?
+    /// Tavern runtimes lead with story copy instead of the engineering pool.
+    var isTavern = false
     let onChooseTarget: () -> Void
     private static var revealDuration: Double { 0.4 }
     /// Known copy cascades: each phrase starts before the previous one ends.
@@ -13,6 +15,7 @@ struct NewSessionWelcomeView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @ScaledMetric(relativeTo: .largeTitle) private var titleSize: CGFloat = 40
     @State private var copy = NewSessionWelcomeCopy.allCases.randomElement() ?? .start
+    @State private var tavernCopy = TavernWelcomeCopy.allCases.randomElement() ?? .story
     @State private var titlePhraseCount = 0
     @State private var detailPhraseCount = 0
     @State private var hasStarted = false
@@ -24,7 +27,7 @@ struct NewSessionWelcomeView: View {
 
     private var title: String { deviceName ?? String(localized: "选择设备") }
     private var agent: String { agentName ?? String(localized: "Agent") }
-    private var detail: String { copy.detail(agent: agent) }
+    private var detail: String { isTavern ? tavernCopy.detail(agent: agent) : copy.detail(agent: agent) }
 
     var body: some View {
         welcomeText
@@ -146,6 +149,21 @@ private enum NewSessionWelcomeCopy: CaseIterable {
         case .nextStep: String(localized: "使用 \(agent) 推进下一步。")
         case .feature: String(localized: "使用 \(agent) 实现一个新功能。")
         case .review: String(localized: "使用 \(agent) 审查最近的改动。")
+        }
+    }
+}
+
+/// 酒馆 runtime 的欢迎语池：叙事向，与工程向 NewSessionWelcomeCopy 互不干扰。
+private enum TavernWelcomeCopy: CaseIterable {
+    case story, adventure, character, firstPage, opening
+
+    func detail(agent: String) -> String {
+        switch self {
+        case .story: String(localized: "使用 \(agent) 开始一段新的故事。")
+        case .adventure: String(localized: "使用 \(agent) 继续你的冒险。")
+        case .character: String(localized: "使用 \(agent) 遇见一个新角色。")
+        case .firstPage: String(localized: "使用 \(agent) 翻开故事的第一页。")
+        case .opening: String(localized: "使用 \(agent) 写下故事的开场。")
         }
     }
 }

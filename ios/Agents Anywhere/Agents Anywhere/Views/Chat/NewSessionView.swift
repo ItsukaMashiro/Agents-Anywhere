@@ -17,6 +17,7 @@ struct NewSessionView: View, Equatable {
     @State private var showsFiles = false
     @State private var showsTavern = false
     @Environment(AppState.self) private var appState
+    @Environment(\.colorScheme) private var colorScheme
     @State private var confirmsRetry = false
     @AppStorage(ProjectSidebarPreferences.sessionListKey) private var showsSessionList = false
     @ScaledMetric(relativeTo: .body) private var bodyLineHeight: CGFloat = 22
@@ -36,6 +37,7 @@ struct NewSessionView: View, Equatable {
                     NewSessionContentLayout(viewportHeight: max(0, viewport.size.height - 48)) {
                         NewSessionWelcomeView(deviceName: model.connector?.name,
                             agentName: model.runtime?.sessionDisplayName,
+                            isTavern: model.hasTavernOpeningFlow,
                             onChooseTarget: chooseTarget)
                         statusContent
                     }
@@ -137,6 +139,10 @@ struct NewSessionView: View, Equatable {
                     .padding(.vertical, 8)
             }
             .buttonStyle(.borderedProminent)
+            // The root tint follows the text color (white in dark mode), which
+            // would paint this filled button's white label onto a white fill.
+            .tint(AppTheme.primaryControlBackground(colorScheme))
+            .foregroundStyle(AppTheme.primaryControlForeground(colorScheme))
             .accessibilityIdentifier("tavern.open")
             Text(String(localized: "选一张卡片，为你的故事开场。")).font(.footnote).foregroundStyle(.secondary)
         }

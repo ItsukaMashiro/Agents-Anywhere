@@ -12,6 +12,9 @@ struct TavernOpeningSheet: View {
     // 精简卡目不携带 openings；点卡时按需拉取，结果按卡 path 缓存，失败/空保持降级。
     @State private var openingsCache: [String: [TavernCardOpening]] = [:]
     @State private var loadingCardPath: String?
+    // 分类默认折叠，只显示组名；点开的组集合按组名记忆。搜索时命中组自动展开。
+    @State private var expandedGroups: Set<String> = []
+    @Environment(\.colorScheme) private var colorScheme
 
     private enum TavernStep: Hashable {
         case opening(TavernCard, openings: [TavernCardOpening])
@@ -56,6 +59,19 @@ struct TavernOpeningSheet: View {
         }
     }
 
+    private var isSearching: Bool {
+        !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func expansionBinding(_ group: String) -> Binding<Bool> {
+        Binding(
+            get: { isSearching || expandedGroups.contains(group) },
+            set: { open in
+                if open { expandedGroups.insert(group) } else { expandedGroups.remove(group) }
+            }
+        )
+    }
+
     private var cardList: some View {
         List {
             if catalog == nil {
@@ -65,7 +81,7 @@ struct TavernOpeningSheet: View {
                     let cards = filteredCards.filter { $0.group == group }
                         .sorted { ($0.starred ? 0 : 1, $0.name) < ($1.starred ? 0 : 1, $1.name) }
                     if !cards.isEmpty {
-                        Section(group.isEmpty ? String(localized: "未分组") : group) {
+                        Section(isExpanded: expansionBinding(group)) {
                             ForEach(cards) { card in
                                 Button {
                                     select(card)
@@ -94,6 +110,8 @@ struct TavernOpeningSheet: View {
                                 }
                                 .accessibilityIdentifier("tavern.card.\(card.path)")
                             }
+                        } header: {
+                            Text(group.isEmpty ? String(localized: "未分组") : group)
                         }
                     }
                 }
@@ -129,6 +147,7 @@ private struct TavernOpeningPager: View {
     let openings: [TavernCardOpening]
     let onChoose: (_ openingID: String) -> Void
     @State private var index = 0
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         VStack(spacing: 0) {
@@ -157,6 +176,8 @@ private struct TavernOpeningPager: View {
             VStack(spacing: 10) {
                 Button(String(localized: "使用这条开场白")) { onChoose(openings[index].id) }
                     .buttonStyle(.borderedProminent)
+                    .tint(AppTheme.primaryControlBackground(colorScheme))
+                    .foregroundStyle(AppTheme.primaryControlForeground(colorScheme))
                 Button(String(localized: "使用默认开场白")) { onChoose("") }
             }
             .padding(.bottom, 16)
@@ -176,6 +197,7 @@ private struct TavernGameDetailsView: View {
     @State private var userName = ""
     @State private var isCreating = false
     @State private var creationError: String?
+    @Environment(\.colorScheme) private var colorScheme
 
     private var firstLine: Binding<String> {
         Binding(get: { model.draft.text }, set: { model.draft.text = $0; model.scheduleDraftSave() })
@@ -225,6 +247,8 @@ private struct TavernGameDetailsView: View {
                     }
                 }
                 .buttonStyle(.borderedProminent)
+                .tint(AppTheme.primaryControlBackground(colorScheme))
+                .foregroundStyle(AppTheme.primaryControlForeground(colorScheme))
                 .disabled(!canStart || isCreating)
                 .accessibilityIdentifier("tavern.start")
             }
