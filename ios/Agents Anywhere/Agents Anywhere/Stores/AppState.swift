@@ -873,38 +873,25 @@ final class AppState {
             slot.services = services
             do {
                 let updates = try await services.dashboard.updates(clientId: dashboardClientId)
-                try await withThrowingTaskGroup(of: Void.self) { group in
-                    // Task-group children are nonisolated even though this type is
-                    // @MainActor, so every slot/state touch hops back through a
-                    // main-actor helper; the cadence and ordering are unchanged.
-                    group.addTask { [self] in
-                        while !Task.isCancelled {
-                            do {
-                                try await Task.sleep(for: .milliseconds(200))
-                            } catch {
-                                return
-                            }
-                            await self.applyCoalescedDashboardFrame(slot: slot)
-                        }
-                    }
-                    group.addTask { [self] in
+                // Throttled applier: frames are full-state last-wins, so it only ever
+                // takes the newest frame from the slot, no less than one second after
+                // the previous application. The consumer below keeps draining the stream
+                // so the socket is never backpressured by application throttling.
+                let applier = Task { [self] in
+                    while !Task.isCancelled {
                         do {
-                            for try await snapshot in updates {
-                                let keepGoing = await self.noteDashboardFrame(snapshot, slot: slot)
-                                if !keepGoing { break }
-                            }
+                            try await Task.sleep(for: .milliseconds(200))
                         } catch {
-                            group.cancelAll()
-                            throw error
+                            return
                         }
-                        // Stream ended normally: stop the applier, then let the caller
-                        // flush whatever frame is newest.
-                        group.cancelAll()
+                        await self.applyCoalescedDashboardFrame(slot: slot)
                     }
-                    try await group.waitForAll()
                 }
-                flushPendingDashboardSnapshot(slot, services: services)
-                if cachedServices !== services { return }
+                defer { applier.cancel() }
+                for try await snapshot in updates {
+                    let keepGoing = await self.noteDashboardFrame(snapshot, slot: slot)
+                    if !keepGoing { break }
+                }
             } catch {
                 flushPendingDashboardSnapshot(slot, services: services)
                 if Task.isCancelled { return }
@@ -913,6 +900,8 @@ final class AppState {
                 dashboardError = failure.message
                 if !failure.permitsAutomaticReconnect { return }
             }
+            flushPendingDashboardSnapshot(slot, services: services)
+            if cachedServices !== services { return }
 
             if slot.sawFrame { attempt = 0 }
             do {
