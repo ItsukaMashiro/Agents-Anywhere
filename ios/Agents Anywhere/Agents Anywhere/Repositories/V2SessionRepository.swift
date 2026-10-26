@@ -458,6 +458,7 @@ final class V2SessionRepository {
                 if entry.connectionID == connectionID { entry.connectionTask = nil }
             }
             var attempt = 0
+            var diagN = 0; var diagT = ContinuousClock.now
             while self.isCurrent(entry), entry.connectionID == connectionID, !Task.isCancelled {
                 do {
                     entry.connection = attempt == 0 ? .connecting : .reconnecting
@@ -481,6 +482,11 @@ final class V2SessionRepository {
                             self.emit(entry, persist: false)
                         } else {
                             try await self.receive(event, entry: entry)
+                        }
+                        diagN += 1
+                        if diagN >= 20 || aaDiagMs(diagT.duration(to: .now)) > 50 {
+                            AADiag.event("ws_batch", ["n": diagN, "ms": aaDiagMs(diagT.duration(to: .now)), "items": entry.projection?.data.items.count ?? 0])
+                            diagN = 0; diagT = .now
                         }
                     }
                     throw CacheError.connectionClosed

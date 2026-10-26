@@ -7,7 +7,11 @@ struct V2SessionDetailService {
 
     func load(sessionId: V2SessionID, itemLimit: Int = 100) async throws -> V2SessionSnapshot {
         try validatePageSize(itemLimit)
-        return try await sessionAPI.snapshot(sessionId: sessionId, limit: itemLimit)
+        AADiag.stage("detail.load")
+        let diagT = ContinuousClock.now
+        let snapshot = try await sessionAPI.snapshot(sessionId: sessionId, limit: itemLimit)
+        AADiag.metric("detail_load", ms: aaDiagMs(diagT.duration(to: .now)), ["items": snapshot.timeline.items.count])
+        return snapshot
     }
 
     func loadOlderItems(

@@ -14,14 +14,18 @@ struct V2DashboardService {
 
     /// Reads the durable dashboard resources concurrently.
     func load() async throws -> V2DashboardData {
+        AADiag.stage("dashboard.load")
+        let diagT = ContinuousClock.now
         async let connectors = connectorAPI.listConnectors()
         async let projects = projectAPI.list()
         async let inventory = sessionAPI.sessionInventory()
         let (connectorResponse, projectResponse, sessionResponse) = try await (connectors, projects, inventory)
-        return V2DashboardData(
+        let data = V2DashboardData(
             connectors: connectorResponse.connectors,
             projects: projectResponse.projects, sessions: sessionResponse.sessions
         )
+        AADiag.metric("dashboard_load", ms: aaDiagMs(diagT.duration(to: .now)), ["sessions": data.sessions.count])
+        return data
     }
 
     /// Opens the dashboard push channel after obtaining a single-use ticket.

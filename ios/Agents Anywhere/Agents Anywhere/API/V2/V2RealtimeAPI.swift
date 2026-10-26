@@ -80,6 +80,7 @@ nonisolated struct V2RealtimeAPI: V2RealtimeAPIProtocol {
                     while !Task.isCancelled {
                         try await Task.sleep(for: heartbeatCheckInterval)
                         if lastFrame.duration(to: .now) >= heartbeatTimeout {
+                            AADiag.event("ws_down", ["reason": "heartbeat_timeout"])
                             continuation.finish(throwing: URLError(.timedOut))
                             connection.close()
                             return
@@ -91,8 +92,13 @@ nonisolated struct V2RealtimeAPI: V2RealtimeAPIProtocol {
                 do {
                     for try await data in connection.messages() {
                         lastFrame = .now
+                        let diagT0 = ContinuousClock.now
                         // Keepalive detection and value decoding share one parse.
                         guard let value = try decoder.decode(V2SocketFrame<Value>.self, from: data).value else { continue }
+                        let diagMs = aaDiagMs(diagT0.duration(to: .now))
+                        if data.count > 100_000 || diagMs > 5 {
+                            AADiag.event("ws_frame", ["bytes": data.count, "ms": diagMs])
+                        }
                         if case .dropped = continuation.yield(value) {
                             throw HTTPError.streamOverflow
                         }

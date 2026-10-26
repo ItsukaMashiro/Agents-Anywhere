@@ -465,6 +465,7 @@ final class AppState {
 
     private func syncDashboard(_ services: V2ClientServices) {
         guard cachedServices === services else { return }
+        let diagT = ContinuousClock.now
         let repository = services.dashboardRepository
         // Each tracked write invalidates every view reading that property; only publish real changes.
         if connectors != repository.connectors { connectors = repository.connectors }
@@ -484,6 +485,7 @@ final class AppState {
             services.newSession.updateProjects(projects)
             services.newSession.updateConnectors(connectors)
         }
+        AADiag.metric("dashboard_sync", ms: aaDiagMs(diagT.duration(to: .now)), ["n": sessions.count])
     }
 
     /// Opens the dashboard WebSocket and continuously replaces the global Connector and Session projections.

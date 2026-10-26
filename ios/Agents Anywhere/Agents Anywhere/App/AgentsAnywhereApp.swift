@@ -8,6 +8,7 @@ struct AgentsAnywhereApp: App {
 
     init() {
         AppFontRegistry.registerBundledFonts()
+        AADiag.start()
     }
 
     var body: some Scene {
@@ -21,7 +22,8 @@ struct AgentsAnywhereApp: App {
                 }
                 .preferredColorScheme(appearance.colorScheme)
                 .onChange(of: scenePhase) { _, phase in
-                    if phase == .background { appState.setAppInBackground(true) }
+                    AADiag.event("scene", ["phase": "\(phase)"])
+                    if phase == .background { appState.setAppInBackground(true); AADiag.flush() }
                     else if phase == .active { appState.setAppInBackground(false) }
                 }
         }

@@ -37,6 +37,7 @@ nonisolated struct URLSessionHTTPTransport: HTTPTransport {
     func send<Body: Encodable, Response: Decodable>(_ request: HTTPRequest<Body, Response>) async throws -> Response {
         let urlRequest = try await makeURLRequest(request)
         var attempt = 0
+        let diagT = ContinuousClock.now
         while true {
             try Task.checkCancellation()
             var retryAfter: TimeInterval?
@@ -49,6 +50,8 @@ nonisolated struct URLSessionHTTPTransport: HTTPTransport {
                                            message: decodeServerErrorMessage(data: data, statusCode: http.statusCode),
                                            detail: try? decoder.decode(HTTPServerErrorEnvelope.self, from: data).detail)
                 }
+                AADiag.metric("rest", ms: aaDiagMs(diagT.duration(to: .now)), bytes: data.count,
+                              ["path": urlRequest.url?.path ?? request.path, "code": http.statusCode])
                 return try decodeResponse(Response.self, from: data)
             } catch {
                 try Task.checkCancellation()
