@@ -52,7 +52,9 @@ nonisolated struct V2SessionArchive: Codable {
         projection(items: try items.map { try V2TimelineItem(json: $0) }, maximumItems: maximumItems)
     }
 
-    @MainActor func projection(items decoded: [V2TimelineItem], maximumItems: Int) -> V2SessionProjection {
+    /// Pure value construction over the archive's own fields; explicitly nonisolated so
+    /// restoreCachedSession can build the cached projection off the main actor.
+    nonisolated func projection(items decoded: [V2TimelineItem], maximumItems: Int) -> V2SessionProjection {
         let empty = V2RuntimeCapabilitySnapshot(revision: 0, capabilities: [])
         let snapshot = V2SessionSnapshot(session: session, state: nil,
             timeline: .init(items: decoded, nextSeq: V2SessionProjection.sequence(cursor), hasMore: hasOlderItems),

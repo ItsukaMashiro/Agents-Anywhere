@@ -870,31 +870,28 @@ final class AppState {
         var attempt = 0
         while !Task.isCancelled {
             let slot = DashboardFrameSlot()
+            slot.services = services
             do {
                 let updates = try await services.dashboard.updates(clientId: dashboardClientId)
                 try await withThrowingTaskGroup(of: Void.self) { group in
-                    group.addTask {
-                        var lastApply = ContinuousClock.now - .seconds(1)
+                    // Task-group children are nonisolated even though this type is
+                    // @MainActor, so every slot/state touch hops back through a
+                    // main-actor helper; the cadence and ordering are unchanged.
+                    group.addTask { [self] in
                         while !Task.isCancelled {
                             do {
                                 try await Task.sleep(for: .milliseconds(200))
                             } catch {
                                 return
                             }
-                            guard let snapshot = slot.latest,
-                                  lastApply.duration(to: .now) >= .seconds(1) else { continue }
-                            slot.latest = nil
-                            lastApply = .now
-                            if cachedServices !== services { return }
-                            applyDashboardSnapshot(snapshot)
+                            await self.applyCoalescedDashboardFrame(slot: slot)
                         }
                     }
-                    group.addTask {
+                    group.addTask { [self] in
                         do {
                             for try await snapshot in updates {
-                                if Task.isCancelled || cachedServices !== services { break }
-                                slot.sawFrame = true
-                                slot.latest = snapshot
+                                let keepGoing = await self.noteDashboardFrame(snapshot, slot: slot)
+                                if !keepGoing { break }
                             }
                         } catch {
                             group.cancelAll()
@@ -932,6 +929,26 @@ final class AppState {
     private func flushPendingDashboardSnapshot(_ slot: DashboardFrameSlot, services: V2ClientServices) {
         guard cachedServices === services, let snapshot = slot.latest else { return }
         slot.latest = nil
+        applyDashboardSnapshot(snapshot)
+    }
+
+    /// Consumer-side slot write, run on the main actor: remembers the newest frame and
+    /// reports whether the generation is still alive (same checks the inline loop used).
+    private func noteDashboardFrame(_ snapshot: V2DashboardSnapshot, slot: DashboardFrameSlot) -> Bool {
+        guard !Task.isCancelled, cachedServices === slot.services else { return false }
+        slot.sawFrame = true
+        slot.latest = snapshot
+        return true
+    }
+
+    /// Applier tick, run on the main actor: applies the newest frame no less than one
+    /// second after the previous application (full-state frames are last-wins).
+    private func applyCoalescedDashboardFrame(slot: DashboardFrameSlot) {
+        guard !Task.isCancelled, cachedServices === slot.services else { return }
+        guard let snapshot = slot.latest,
+              slot.lastApply.duration(to: .now) >= .seconds(1) else { return }
+        slot.latest = nil
+        slot.lastApply = .now
         applyDashboardSnapshot(snapshot)
     }
 
@@ -1066,4 +1083,8 @@ private final class DashboardFrameSlot {
     /// Set when any frame was received in this stream generation; used to reset the
     /// reconnect backoff exactly when the connection proved live, like the pre-coalescing loop.
     var sawFrame = false
+    /// Last application instant; the applier keeps at least one second between frames.
+    var lastApply = ContinuousClock.now - .seconds(1)
+    /// The services generation this slot belongs to; children re-check it on the main actor.
+    var services: V2ClientServices?
 }

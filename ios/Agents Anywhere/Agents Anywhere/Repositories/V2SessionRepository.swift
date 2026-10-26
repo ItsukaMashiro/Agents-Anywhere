@@ -725,18 +725,21 @@ final class V2SessionRepository {
         guard let base = entry.projection else { return }
         entry.foldGeneration += 1
         let foldGeneration = entry.foldGeneration
-        let task = Task { () throws -> V2SessionProjection in
-            try await Task.detached(priority: .userInitiated) { try work(base) }.value
-        }
-        entry.foldTask = task
+        let detached = Task.detached(priority: .userInitiated) { try work(base) }
+        // foldTask is Task<Void, Never>; drainFolds only needs a completion signal, so
+        // the slot holds a waiter that mirrors the throwing work task. The work itself
+        // is awaited through `detached` below and its error rethrown to the caller.
+        let waiter = Task<Void, Never> { _ = try? await detached.value }
+        entry.foldTask = waiter
+        let result: V2SessionProjection
         do {
-            let result = try await task.value
-            guard entry.foldGeneration == foldGeneration else { return }
-            entry.projection = result
+            result = try await detached.value
         } catch {
             if entry.foldGeneration == foldGeneration { entry.foldTask = nil }
             throw error
         }
+        guard entry.foldGeneration == foldGeneration else { return }
+        entry.projection = result
         if entry.foldGeneration == foldGeneration { entry.foldTask = nil }
         if entry.foldTask == nil, !entry.pendingEvents.isEmpty { scheduleFold(entry) }
     }
