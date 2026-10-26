@@ -857,17 +857,59 @@ final class AppState {
     }
 
     /// Receives server-pushed dashboard snapshots and reconnects after transient failures.
+    ///
+    /// Coalescing (fix/ios/mainactor-stall): the server pushes a full-state dashboard frame
+    /// roughly every 500 ms and the MainActor full diff + publish costs 13–32 ms per frame.
+    /// The consumer keeps draining the stream (so it never backpressures the socket) but only
+    /// stores the newest frame; the applier applies that newest frame at no less than one
+    /// second intervals. Frames are full-state last-wins snapshots, so applying the newest
+    /// frame reaches the same final state as applying every frame. A frame still pending when
+    /// the stream ends is flushed before handling the error or reconnecting, so the last
+    /// frame is never dropped.
     private func receiveDashboardUpdates(services: V2ClientServices) async {
         var attempt = 0
         while !Task.isCancelled {
+            let slot = DashboardFrameSlot()
             do {
                 let updates = try await services.dashboard.updates(clientId: dashboardClientId)
-                for try await snapshot in updates {
-                    if Task.isCancelled || cachedServices !== services { return }
-                    attempt = 0
-                    applyDashboardSnapshot(snapshot)
+                try await withThrowingTaskGroup(of: Void.self) { group in
+                    group.addTask {
+                        var lastApply = ContinuousClock.now - .seconds(1)
+                        while !Task.isCancelled {
+                            do {
+                                try await Task.sleep(for: .milliseconds(200))
+                            } catch {
+                                return
+                            }
+                            guard let snapshot = slot.latest,
+                                  lastApply.duration(to: .now) >= .seconds(1) else { continue }
+                            slot.latest = nil
+                            lastApply = .now
+                            if cachedServices !== services { return }
+                            applyDashboardSnapshot(snapshot)
+                        }
+                    }
+                    group.addTask {
+                        do {
+                            for try await snapshot in updates {
+                                if Task.isCancelled || cachedServices !== services { break }
+                                slot.sawFrame = true
+                                slot.latest = snapshot
+                            }
+                        } catch {
+                            group.cancelAll()
+                            throw error
+                        }
+                        // Stream ended normally: stop the applier, then let the caller
+                        // flush whatever frame is newest.
+                        group.cancelAll()
+                    }
+                    try await group.waitForAll()
                 }
+                flushPendingDashboardSnapshot(slot, services: services)
+                if cachedServices !== services { return }
             } catch {
+                flushPendingDashboardSnapshot(slot, services: services)
                 if Task.isCancelled { return }
                 let failure = V2ClientFailure(error)
                 guard cachedServices === services else { return }
@@ -875,6 +917,7 @@ final class AppState {
                 if !failure.permitsAutomaticReconnect { return }
             }
 
+            if slot.sawFrame { attempt = 0 }
             do {
                 try await Task.sleep(for: .seconds(min(1 << min(attempt, 4), 15)))
                 attempt += 1
@@ -882,6 +925,14 @@ final class AppState {
                 return
             }
         }
+    }
+
+    /// Applies the last coalesced frame after the stream ends; skipped when the account
+    /// switched, matching the per-frame guard the pre-coalescing loop used.
+    private func flushPendingDashboardSnapshot(_ slot: DashboardFrameSlot, services: V2ClientServices) {
+        guard cachedServices === services, let snapshot = slot.latest else { return }
+        slot.latest = nil
+        applyDashboardSnapshot(snapshot)
     }
 
     private func applyDashboardSnapshot(_ snapshot: V2DashboardSnapshot) {
@@ -1005,4 +1056,14 @@ final class AppState {
         Host.current().localizedName ?? "Agents Anywhere iOS"
         #endif
     }
+}
+
+/// Shared coalescing slot for one dashboard stream generation. Both the consumer and the
+/// throttled applier run on the MainActor, so this needs no extra synchronization.
+@MainActor
+private final class DashboardFrameSlot {
+    var latest: V2DashboardSnapshot?
+    /// Set when any frame was received in this stream generation; used to reset the
+    /// reconnect backoff exactly when the connection proved live, like the pre-coalescing loop.
+    var sawFrame = false
 }
