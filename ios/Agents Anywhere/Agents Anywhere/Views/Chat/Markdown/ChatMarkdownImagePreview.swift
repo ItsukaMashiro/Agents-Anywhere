@@ -27,9 +27,13 @@ struct ChatMarkdownImagePreview: View {
         }
         .appSheetPresentation(.expanded)
         .task(id: attachment) {
-            let data = await Task.detached(priority: .userInitiated) { attachment.pngData() }.value
+            // Re-encode + decode of full-resolution bytes: keep both hops off the main
+            // actor (previously the UIImage(data:) decode ran back on the main actor).
+            image = await Task.detached(priority: .userInitiated) {
+                guard let data = attachment.pngData() else { return nil }
+                return UIImage(data: data)
+            }.value
             guard !Task.isCancelled else { return }
-            image = data.flatMap { UIImage(data: $0) }
             loaded = true
         }
     }

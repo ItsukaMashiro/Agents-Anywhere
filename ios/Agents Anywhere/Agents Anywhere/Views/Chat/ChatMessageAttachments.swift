@@ -67,14 +67,32 @@ private struct ChatMessageImage: View {
             .contentShape(.rect(cornerRadius: 16))
         }
         .buttonStyle(.plain).accessibilityLabel(file.content.name ?? String(localized: "图片附件"))
-        .onAppear { if image == nil, let data = file.previewData { image = UIImage(data: data) } }
+        .onAppear {
+            guard image == nil, let data = file.previewData else { return }
+            // Same synchronous fast path as before for local bytes, but seeded through the
+            // shared cache: scroll round-trips hit memory instead of re-decoding, which was
+            // the repeated-decode stall on attachment-heavy sessions.
+            let key = file.content.cacheKey
+            if let cached = V2AttachmentImageCache.shared.cached(key: key) {
+                image = cached
+            } else if let decoded = UIImage(data: data) {
+                image = decoded
+                V2AttachmentImageCache.shared.store(decoded, key: key)
+            }
+        }
         .onScrollVisibilityChange(threshold: 0.01) { visible = $0 }
         .task(id: Request(visible: visible, key: file.content.cacheKey, retry: retry)) {
             guard visible, image == nil else { return }
             do {
-                let data = try await loadThumbnail(file.content)
+                // Decode (and its byte fetch) off the main actor, once per attachment:
+                // concurrent cells with the same key join one pipeline. nil result —
+                // fetch failure or undecodable bytes — keeps the old "failed" affordance.
+                let load = loadThumbnail
+                let content = file.content
+                image = await V2AttachmentImageCache.shared.image(key: content.cacheKey) {
+                    try? await load(content)
+                }
                 guard !Task.isCancelled else { return }
-                image = data.flatMap { UIImage(data: $0) }
                 failed = image == nil
             } catch { if !Task.isCancelled { failed = true } }
         }
