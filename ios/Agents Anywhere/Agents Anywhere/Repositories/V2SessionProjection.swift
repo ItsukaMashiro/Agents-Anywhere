@@ -2,7 +2,13 @@ import Foundation
 
 /// Reduces server projections without network I/O or UI state. Live projections may
 /// change A -> B -> A at the same durable sequence and must not use event-ID dedup.
-struct V2SessionProjection {
+/// Value-semantics timeline projection. Explicitly nonisolated (the target defaults to
+/// MainActor isolation) so the repository can fold live batches on a background task:
+/// copies are handed to `Task.detached` and applied there, then the finished copy is
+/// swapped back in on the main actor. The stored decoder is only ever driven from one
+/// context at a time — applies run either on the main actor (hydrate/history paths, after
+/// awaiting any in-flight fold) or inside the detached fold, never concurrently.
+nonisolated struct V2SessionProjection {
     private(set) var data: V2SessionData
     private let maximumItems: Int
     private var eventIDs: Set<String> = []

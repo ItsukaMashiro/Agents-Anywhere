@@ -77,6 +77,8 @@ final class V2SessionRepository {
         entry.historyTask = nil
         // Trim before a possible latest-page request so an offline fallback
         // also stays bounded and cannot remount the entire cached history.
+        // Serialize behind any in-flight fold: the trim must not be clobbered by a swap-back.
+        await drainFolds(entry)
         if entry.projection?.limitToLatest(100) == true { emit(entry) }
         if entry.projection?.data.hasNewerItems == true {
             return try await loadLatest(sessionId: sessionId, limit: 100)
@@ -117,7 +119,19 @@ final class V2SessionRepository {
         guard isCurrent(entry), entry.projection == nil, !entry.hasReadLocal else { return }
         entry.hasReadLocal = true; entry.localReadTask = nil
         guard let saved, saved.archive.session.id == id else { return }
-        entry.projection = saved.archive.projection(items: saved.items, maximumItems: policy.maximumTimelineItems)
+        // Building the projection sorts the cached page; keep it off the main actor.
+        // No fold can compete here: the projection is still nil and the socket loop
+        // only receives after load() returns.
+        let maximumItems = policy.maximumTimelineItems
+        let built = await Task.detached(priority: .userInitiated) {
+            saved.archive.projection(items: saved.items, maximumItems: maximumItems)
+        }.value
+        // The detached build introduced a suspension: if a server hydrate completed in the
+        // meantime its (newer) snapshot wins, exactly as it would have when the synchronous
+        // cached assignment ran before hydrate in the old ordering.
+        guard isCurrent(entry), entry.projection == nil else { return }
+        entry.foldGeneration += 1
+        entry.projection = built
         entry.model.restoreLocal(saved.archive)
         emit(entry, persist: false)
     }
@@ -195,7 +209,14 @@ final class V2SessionRepository {
             defer { if entry.readVersion == version { entry.historyTask = nil } }
             let page = try await detail.loadOlderItems(sessionId: sessionId, beforeOrderSeq: before, limit: limit)
             try requireCurrent(entry, version: version)
-            entry.projection?.applyHistory(page)
+            // History merge re-sorts the whole window — run it off the main actor,
+            // serialized with live folds through the fold slot.
+            try await offMainFold(entry) { projection in
+                var projection = projection
+                projection.applyHistory(page)
+                return projection
+            }
+            try requireCurrent(entry, version: version)
             emit(entry)
             return entry.projection!.data
         }
@@ -213,7 +234,13 @@ final class V2SessionRepository {
         let version = entry.readVersion
         let page = try await detail.latestItems(sessionId: sessionId, limit: limit)
         try requireCurrent(entry, version: version)
-        entry.projection?.applyLatest(page)
+        // Same full-window re-sort as loadOlder — off the main actor, via the fold slot.
+        try await offMainFold(entry) { projection in
+            var projection = projection
+            projection.applyLatest(page)
+            return projection
+        }
+        try requireCurrent(entry, version: version)
         emit(entry)
         return entry.projection!.data
     }
@@ -266,7 +293,12 @@ final class V2SessionRepository {
         let entry = entry(for: sessionId)
         let response = try await interactions.executeCommand(sessionId: sessionId, command: request.command, arguments: request.args, raw: request.raw)
         try requireCurrent(entry)
-        if let session = response.session { entry.projection?.applyMeta(session); emit(entry) }
+        if let session = response.session {
+            // Serialize behind any in-flight fold so its swap-back cannot clobber this meta.
+            await drainFolds(entry)
+            entry.projection?.applyMeta(session)
+            emit(entry)
+        }
         return response
     }
 
@@ -308,6 +340,7 @@ final class V2SessionRepository {
         let entry = entry(for: sessionId)
         let session = try await detail.setTakeover(sessionId: sessionId, enabled: enabled)
         try requireCurrent(entry)
+        await drainFolds(entry)
         entry.projection?.applyMeta(session)
         entry.projection?.markStale()
         emit(entry)
@@ -322,6 +355,7 @@ final class V2SessionRepository {
         let entry = entry(for: sessionId)
         let state = try await detail.updateSelection(sessionId: sessionId, scope: scope, selectionId: selectionId)
         try requireCurrent(entry)
+        await drainFolds(entry)
         if let state { entry.projection?.applyState(state) }
         invalidateCatalogs(entry)
         emit(entry)
@@ -333,6 +367,7 @@ final class V2SessionRepository {
         _ = try await interactions.respond(sessionId: sessionId, noticeId: noticeId, actionId: actionId, input: input)
         try requireCurrent(entry)
         // Response acceptance is not notice resolution; wait for authoritative live facts.
+        await drainFolds(entry)
         entry.projection?.markStale()
         emit(entry)
         do { try await reconcile(entry) }
@@ -436,7 +471,20 @@ final class V2SessionRepository {
             let snapshot = try await detail.load(sessionId: entry.id)
             try requireCurrent(entry, version: version)
             guard snapshot.session.id == entry.id else { throw CacheError.invalidated }
-            entry.projection = V2SessionProjection(snapshot: snapshot, maximumItems: policy.maximumTimelineItems)
+            // Building the initial window sorts the snapshot page: build it off the main
+            // actor and serialize behind any in-flight fold so no swap-back can clobber
+            // the fresh snapshot. The socket loop blocks on loadTask, so no new event
+            // queues between the drain and the assignment.
+            await drainFolds(entry)
+            let maximumItems = policy.maximumTimelineItems
+            let built = await Task.detached(priority: .userInitiated) {
+                V2SessionProjection(snapshot: snapshot, maximumItems: maximumItems)
+            }.value
+            // Advance the generation so any off-main mutation that captured the previous
+            // projection (a history page started before this snapshot arrived) discards
+            // its swap-back instead of overwriting the fresh snapshot.
+            entry.foldGeneration += 1
+            entry.projection = built
             invalidateCatalogs(entry)
             entry.error = nil
             emit(entry)
@@ -515,28 +563,182 @@ final class V2SessionRepository {
         guard event.sessionId == entry.id else { return }
         if let pending = entry.loadTask { _ = try await pending.value }
         if let pending = entry.recoveryTask { try await pending.value }
-        if event.type == "session.refetch_required" || event.sequence > (entry.projection?.sequence ?? 0) + 1 {
+        if event.type == "session.refetch_required" || event.sequence > effectiveSequence(entry) + 1 {
             try await reconcile(entry)
         }
         try requireCurrent(entry)
         let readTypes = ["runtime.state.updated", "runtime.capability.updated", "runtime.notice.snapshot", "runtime.notice.updated"]
         if readTypes.contains(event.type), event.receivedAt < entry.projectionBarrier { return }
-        let wasOnline = entry.projection?.data.session.connectorStatus == .online
-        let previousRuntime = entry.projection?.data.session.effectiveRuntimeId
-        if event.type == "timeline.snapshot", event.sequence >= (entry.projection?.sequence ?? 0) {
+        if event.type == "timeline.snapshot", event.sequence >= effectiveSequence(entry) {
             entry.readVersion += 1
             entry.historyTask?.cancel()
             entry.historyTask = nil
         }
-        try entry.projection?.apply(event)
-        if event.type == "runtime.catalog.updated" || entry.projection?.data.session.connectorStatus != .online {
-            invalidateCatalogs(entry)
+        // Batch coalescing: applying a batch decodes every payload, merges it into the
+        // timeline window and re-sorts it (measured 300–540 ms per ~103-item batch on the
+        // main actor). The socket loop now only queues; scheduleFold(_:) folds consecutive
+        // batches on a background task and the main actor swaps in only the final
+        // projection once per fold. Catalog invalidation, online edges and the reconcile
+        // they trigger are derived per-event inside the fold, exactly as they were here.
+        entry.pendingEvents.append(event)
+        scheduleFold(entry)
+    }
+
+    /// The cursor including every event this generation has handed to the fold machinery.
+    /// While a fold is in flight `projection.sequence` trails it; comparing a live event
+    /// against the trailed value would misread consecutive events as a gap and trigger a
+    /// spurious recovery.
+    private func effectiveSequence(_ entry: Entry) -> Int {
+        max(entry.projection?.sequence ?? 0, entry.foldScheduledSeq ?? 0, entry.pendingEvents.last?.sequence ?? 0)
+    }
+
+    /// Queue coalescing for live batches — the session-socket sibling of the dashboard
+    /// frame slot. One fold per session at a time: queued events are applied to a copy of
+    /// the projection on a background task (payload decode, merge and full-window sort all
+    /// leave the main actor); the main actor applies the minimal diff — swapping in the
+    /// finished projection, applying derived catalog invalidation, and one coalesced emit.
+    /// Events arriving while a fold runs wait in `pendingEvents` and ride the next fold,
+    /// so a burst applies its terminal state, not every intermediate state.
+    private func scheduleFold(_ entry: Entry) {
+        guard entry.foldTask == nil, !entry.pendingEvents.isEmpty else { return }
+        let connectionID = entry.connectionID
+        entry.foldGeneration += 1
+        let foldGeneration = entry.foldGeneration
+        entry.foldTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if entry.foldGeneration == foldGeneration, entry.foldTask != nil { entry.foldTask = nil }
+            }
+            while !Task.isCancelled, !entry.pendingEvents.isEmpty,
+                  self.isCurrent(entry), entry.connectionID == connectionID {
+                let pending = entry.pendingEvents
+                entry.pendingEvents.removeAll()
+                let base = entry.projection
+                let baseSeq = base?.sequence ?? 0
+                // Events already covered by a snapshot-level replacement (for example a
+                // hydrate that ran while this fold was scheduled) must not replay stale
+                // payloads over it; `apply` guards the cursor per event too, dropping the
+                // whole replay prefix here keeps the fold work minimal.
+                let batch = pending.filter { $0.sequence > baseSeq }
+                entry.foldScheduledSeq = pending.last?.sequence
+                guard let snapshot = base else {
+                    // A generation without a projection refetches through recover(after:).
+                    self.abandonFoldQueue(entry)
+                    return
+                }
+                guard !batch.isEmpty else { entry.foldScheduledSeq = nil; continue }
+                do {
+                    let outcome = try await Task.detached(priority: .userInitiated) {
+                        var projection = snapshot
+                        var invalidate = false
+                        var reconcileNeeded = false
+                        for event in batch {
+                            let wasOnline = projection.data.session.connectorStatus == .online
+                            let previousRuntime = projection.data.session.effectiveRuntimeId
+                            try projection.apply(event)
+                            if event.type == "runtime.catalog.updated" || projection.data.session.connectorStatus != .online {
+                                invalidate = true
+                            }
+                            if projection.data.session.connectorStatus == .online,
+                               !wasOnline || previousRuntime != projection.data.session.effectiveRuntimeId {
+                                reconcileNeeded = true
+                            }
+                        }
+                        return (projection: projection, invalidate: invalidate, reconcileNeeded: reconcileNeeded)
+                    }.value
+                    guard self.isCurrent(entry), entry.connectionID == connectionID,
+                          entry.foldGeneration == foldGeneration, !Task.isCancelled else {
+                        self.abandonFoldQueue(entry)
+                        return
+                    }
+                    entry.foldScheduledSeq = nil
+                    entry.projection = outcome.projection
+                    if outcome.invalidate { self.invalidateCatalogs(entry) }
+                    self.emitAfterBacklog(entry)
+                    if outcome.reconcileNeeded {
+                        // Recovery takes the fold slot for its own off-main apply; release it
+                        // before awaiting so reconcile(_:) can drain it. The socket loop
+                        // blocks on `recoveryTask`, so no event queues during recovery.
+                        entry.foldTask = nil
+                        do { try await self.reconcile(entry) }
+                        catch { await self.failFoldGeneration(error, entry: entry, connectionID: connectionID); return }
+                        if entry.foldTask == nil { self.scheduleFold(entry) }
+                        return
+                    }
+                } catch {
+                    await self.failFoldGeneration(error, entry: entry, connectionID: connectionID)
+                    return
+                }
+            }
+            entry.foldScheduledSeq = nil
         }
-        emitAfterBacklog(entry)
-        if entry.projection?.data.session.connectorStatus == .online,
-           !wasOnline || previousRuntime != entry.projection?.data.session.effectiveRuntimeId {
-            try await reconcile(entry)
+    }
+
+    /// Replays the connection loop's failure handling for failures detected inside a fold
+    /// (a malformed event, or the post-fold reconcile that the old inline path surfaced to
+    /// that loop). The loop owns its attempt counter locally, so this path runs the loop's
+    /// first-reconnect backoff once, tears down the stream generation — whose loop catch
+    /// sees the cancellation and exits — and lets `start(_:)` open the next generation.
+    /// The dropped queue belongs to the dead generation; it refetches through
+    /// recover(after: cursor), so no event content is lost.
+    private func failFoldGeneration(_ error: Error, entry: Entry, connectionID: UUID) async {
+        abandonFoldQueue(entry)
+        guard isCurrent(entry), entry.connectionID == connectionID, !Task.isCancelled else { return }
+        entry.projection?.markStale()
+        invalidateCatalogs(entry)
+        let failure = V2ClientFailure(error)
+        entry.error = failure
+        entry.connectionTask?.cancel()
+        guard failure.permitsAutomaticReconnect else {
+            entry.connection = .failed(failure.message)
+            emit(entry, persist: false)
+            return
         }
+        entry.connection = .reconnecting
+        emit(entry, persist: false)
+        do { try await sleep(.seconds(1)) }
+        catch { return }
+        guard isCurrent(entry), entry.connectionID == connectionID, !Task.isCancelled else { return }
+        start(entry)
+    }
+
+    private func abandonFoldQueue(_ entry: Entry) {
+        entry.pendingEvents.removeAll()
+        entry.foldScheduledSeq = nil
+    }
+
+    /// Waits until the fold slot is free and every queued event has been applied. Every
+    /// main-actor path that reads or mutates the projection outside the fold machinery
+    /// suspends behind this first, so a swap-back never clobbers its result.
+    private func drainFolds(_ entry: Entry) async {
+        while let fold = entry.foldTask { await fold.value }
+    }
+
+    /// Runs one heavy projection mutation (history-page merge with full-window re-sort,
+    /// or recovery-event apply) on a background task, serialized with live folds through
+    /// the same fold slot: wait for in-flight folds, take the slot synchronously so no
+    /// live event can start a competing fold in between, apply to a copy off the main
+    /// actor, then swap the result back in only while the slot was never taken away —
+    /// stop()/refresh() advance the generation, and their state wins over this swap.
+    private func offMainFold(_ entry: Entry, _ work: @escaping @Sendable (V2SessionProjection) throws -> V2SessionProjection) async throws {
+        await drainFolds(entry)
+        guard let base = entry.projection else { return }
+        entry.foldGeneration += 1
+        let foldGeneration = entry.foldGeneration
+        let task = Task { () throws -> V2SessionProjection in
+            try await Task.detached(priority: .userInitiated) { try work(base) }.value
+        }
+        entry.foldTask = task
+        do {
+            let result = try await task.value
+            guard entry.foldGeneration == foldGeneration else { return }
+            entry.projection = result
+        } catch {
+            if entry.foldGeneration == foldGeneration { entry.foldTask = nil }
+            throw error
+        }
+        if entry.foldGeneration == foldGeneration { entry.foldTask = nil }
+        if entry.foldTask == nil, !entry.pendingEvents.isEmpty { scheduleFold(entry) }
     }
 
     private func reconcile(_ entry: Entry) async throws {
@@ -544,6 +746,10 @@ final class V2SessionRepository {
         let version = entry.connectionID
         let task = Task { [self] in
             defer { if entry.connectionID == version { entry.recoveryTask = nil } }
+            // Recovery reads the cursor from the projection: drain any in-flight fold
+            // first so its swap-back cannot land under us. The socket loop blocks on
+            // recoveryTask, so no new event queues while recovery runs.
+            await drainFolds(entry)
             if entry.projection == nil { _ = try await hydrate(entry) }
             let cursor = entry.projection!.data.cursor
             let recovery = try await detail.recover(sessionId: entry.id, after: cursor)
@@ -552,8 +758,11 @@ final class V2SessionRepository {
             if recovery.snapshotRequired {
                 _ = try await hydrate(entry)
             } else {
-                for event in recovery.events.sorted(by: { $0.sequence < $1.sequence }) {
-                    try entry.projection?.apply(event)
+                let events = recovery.events.sorted { $0.sequence < $1.sequence }
+                try await offMainFold(entry) { projection in
+                    var projection = projection
+                    for event in events { try projection.apply(event) }
+                    return projection
                 }
                 entry.projection?.advanceCursor(recovery.nextCursor)
             }
@@ -625,8 +834,12 @@ final class V2SessionRepository {
     /// Connection and connectivity transitions republish without an archive write.
     private func emit(_ entry: Entry, persist: Bool = true) {
         guard isCurrent(entry) else { return }
-        entry.model.update(observation(entry), network: network)
-        for observer in entry.observers.values { observer.yield(observation(entry)) }
+        // Build the observation once: V2SessionData carries the whole timeline window,
+        // and calling observation(entry) twice forced two full value copies per emit —
+        // the measured copy hot spot while folds hammered this path.
+        let snapshot = observation(entry)
+        entry.model.update(snapshot, network: network)
+        for observer in entry.observers.values { observer.yield(snapshot) }
         if persist, entry.projection != nil {
             entry.isDirty = true
             schedulePersistence()
@@ -646,6 +859,13 @@ final class V2SessionRepository {
         entry.connectionID = UUID()
         entry.connectionTask?.cancel()
         entry.connectionTask = nil
+        // The queue belongs to the dead generation: its events refetch through
+        // recover(after: cursor) on the next start, so dropping them loses no content.
+        entry.foldGeneration += 1
+        entry.foldTask?.cancel()
+        entry.foldTask = nil
+        entry.pendingEvents.removeAll()
+        entry.foldScheduledSeq = nil
         entry.recoveryTask?.cancel()
         entry.recoveryTask = nil
         entry.connection = .inactive
@@ -686,6 +906,17 @@ private final class Entry {
     var emitScheduled = false
     var localReadTask: Task<V2SessionRestore?, Never>?
     var projection: V2SessionProjection?
+    /// Live events queued for the next background fold (not yet applied to the projection).
+    var pendingEvents: [V2SessionEvent] = []
+    /// The one running fold for this session, or nil. Doubles as the off-main history/
+    /// recovery mutation slot — every main-actor path that mutates the projection outside
+    /// the fold machinery drains behind it first.
+    var foldTask: Task<Void, Never>?
+    /// Highest sequence already handed to fold machinery (kept across folds for gap checks).
+    var foldScheduledSeq: Int?
+    /// Bumped whenever fold ownership changes hands (schedule / stop / off-main fold);
+    /// an in-flight swap-back is discarded when the generation no longer matches.
+    var foldGeneration = 0
     var connection = V2SessionConnectionState.inactive
     var error: V2ClientFailure?
     var lastAccess = 0
