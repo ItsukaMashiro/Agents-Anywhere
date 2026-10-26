@@ -329,7 +329,7 @@ nonisolated private func aaDiagPrepareCrashEndpoint() {
         resolved = true
     } else {
         var hints = addrinfo(ai_flags: 0, ai_family: AF_INET, ai_socktype: SOCK_STREAM, ai_protocol: 0,
-                             ai_addrlen: 0, ai_addr: nil, ai_canonname: nil, ai_next: nil)
+                             ai_addrlen: 0, ai_canonname: nil, ai_addr: nil, ai_next: nil)
         var res: UnsafeMutablePointer<addrinfo>?
         if getaddrinfo(host, nil, &hints, &res) == 0, let r = res, let sa = r.pointee.ai_addr {
             ipAddr = sa.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee.sin_addr }
@@ -352,11 +352,11 @@ nonisolated private func aaDiagPrepareCrashEndpoint() {
 
 // Async-signal-safe buffer writes: raw pointers only; arrays are read, never mutated.
 nonisolated private func aaDiagPutStr(_ b: UnsafeMutablePointer<UInt8>, _ o: inout Int, _ s: StaticString) {
-    s.withUTF8 { p, len in
-        var i = 0
-        while i < len { b[o + i] = p[i]; i += 1 }
-        o += len
-    }
+    let len = s.utf8CodeUnitCount
+    let p = s.utf8Start
+    var i = 0
+    while i < len { b[o + i] = p[i]; i += 1 }
+    o += len
 }
 
 nonisolated private func aaDiagPutInt(_ b: UnsafeMutablePointer<UInt8>, _ o: inout Int, _ value: UInt64) {
