@@ -83,18 +83,18 @@ private struct ChatMessageImage: View {
         .onScrollVisibilityChange(threshold: 0.01) { visible = $0 }
         .task(id: Request(visible: visible, key: file.content.cacheKey, retry: retry)) {
             guard visible, image == nil else { return }
-            do {
-                // Decode (and its byte fetch) off the main actor, once per attachment:
-                // concurrent cells with the same key join one pipeline. nil result —
-                // fetch failure or undecodable bytes — keeps the old "failed" affordance.
-                let load = loadThumbnail
-                let content = file.content
-                image = await V2AttachmentImageCache.shared.image(key: content.cacheKey) {
-                    try? await load(content)
-                }
+            // Cache hit: zero work. Miss: fetch bytes (the remote fetch is deduplicated
+            // in flight inside the attachment download), then decode once per key off the
+            // main actor — concurrent cells with the same key share the decode task.
+            // nil (fetch failure or undecodable bytes) keeps the old "failed" affordance.
+            let key = file.content.cacheKey
+            if let cached = V2AttachmentImageCache.shared.cached(key: key) {
+                image = cached
+            } else if let data = try? await loadThumbnail(file.content), !Task.isCancelled {
+                image = await V2AttachmentImageCache.shared.decoded(key: key, data: data)
                 guard !Task.isCancelled else { return }
-                failed = image == nil
-            } catch { if !Task.isCancelled { failed = true } }
+            }
+            failed = image == nil
         }
     }
     private struct Request: Equatable { let visible: Bool; let key: String; let retry: Int }

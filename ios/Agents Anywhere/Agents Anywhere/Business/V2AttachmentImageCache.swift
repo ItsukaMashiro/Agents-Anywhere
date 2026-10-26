@@ -30,13 +30,16 @@ nonisolated final class V2AttachmentImageCache: @unchecked Sendable {
     func store(_ image: UIImage, key: String) { cache.setObject(image, forKey: NSString(string: key)) }
 
     /// Decodes bytes off the main actor exactly once per key. Concurrent requests for the
-    /// same key share one task — including its byte-loading closure — so a scroll burst on
-    /// the same attachment cannot spawn N identical fetch+decode pipelines. A failed decode
-    /// is not cached, so the retry button refetches. A joined caller being cancelled does
-    /// not cancel the shared task: the work still serves the remaining callers and stays
-    /// bounded by one attachment's bytes. Only the task's creator clears the registry slot,
-    /// so a fresh pipeline can only start after the previous one finished.
-    func image(key: String, loadBytes: @escaping @Sendable () async -> Data?) async -> UIImage? {
+    /// same key share one decode task, so a scroll burst on the same attachment never
+    /// spawns N identical decodes. Only `String`/`Data` cross the task boundary — the
+    /// target's MainActor default isolation makes `V2AttachmentContent` (and `UIImage`)
+    /// non-Sendable, so byte fetching stays on the caller side (deduplicated separately by
+    /// `V2AttachmentDownloads`). A failed decode is not cached, so the retry button
+    /// refetches. A joined caller being cancelled does not cancel the shared task: the
+    /// work still serves the remaining callers and is bounded by one image's decode. Only
+    /// the task's creator clears the registry slot, so a fresh pipeline can only start
+    /// after the previous one finished.
+    func decoded(key: String, data: Data) async -> UIImage? {
         if let hit = cached(key: key) { return hit }
         lock.lock()
         if let task = inflight[key] {
@@ -44,7 +47,6 @@ nonisolated final class V2AttachmentImageCache: @unchecked Sendable {
             return await task.value
         }
         let task = Task(priority: .utility) { () -> UIImage? in
-            guard !Task.isCancelled, let data = await loadBytes() else { return nil }
             guard !Task.isCancelled, let image = UIImage(data: data) else { return nil }
             self.cache.setObject(image, forKey: NSString(string: key))
             return image
